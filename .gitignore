@@ -1,0 +1,6 @@
+.env
+__pycache__/
+logs/
+state/
+bienici-common.js
+bienici-index.js

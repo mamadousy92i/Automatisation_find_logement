@@ -1,0 +1,26 @@
+services:
+  - type: cron
+    name: logement-laval-daily
+    runtime: python
+    schedule: "0 8 * * *"
+    buildCommand: "python -m py_compile logement_bot.py"
+    startCommand: "python logement_bot.py --state-file state/last_run.json"
+    envVars:
+      - key: RECIPIENT_EMAIL
+        value: 92mamadousy@gmail.com
+      - key: CITY_QUERY
+        value: laval
+      - key: CITY_POSTAL_CODE
+        value: "53000"
+      - key: MAX_RESULTS
+        value: "50"
+      - key: INCLUDE_PARKING
+        value: "false"
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USERNAME
+        value: 92mamadousy@gmail.com
+      - key: SMTP_PASSWORD
+        sync: false
