@@ -261,6 +261,19 @@ def extract_script_contents(html_text: str) -> list[str]:
     return re.findall(r"<script[^>]*>(.*?)</script>", html_text, flags=re.IGNORECASE | re.DOTALL)
 
 
+def looks_like_sale_listing(*values: str | None) -> bool:
+    haystack = " ".join(value or "" for value in values).lower()
+    sale_markers = (
+        "à vendre",
+        "a vendre",
+        "vente",
+        "vendre",
+        "prix net vendeur",
+        "frais d'agence",
+    )
+    return any(marker in haystack for marker in sale_markers)
+
+
 def build_bienici_detail_url(ad: dict[str, Any]) -> str:
     city_slug = slugify(ad.get("city", "laval"))
     property_segment = PROPERTY_TYPE_ROUTE_SEGMENTS.get(ad.get("propertyType"), "logement")
@@ -462,6 +475,15 @@ def enrich_listing_with_detail(listing: Listing) -> Listing:
 
 
 def enrich_listing_with_esiea_commute(listing: Listing) -> Listing:
+    if (
+        listing.distance_to_esiea_km is not None
+        and listing.transit_route_url
+        and listing.walking_route_url
+        and listing.biking_route_url
+        and listing.driving_route_url
+    ):
+        return listing
+
     straight_line_distance_km = None
     if listing.latitude is not None and listing.longitude is not None:
         straight_line_distance_km = haversine_km(
@@ -762,7 +784,7 @@ def fetch_fnaim_listings(max_results: int) -> list[Listing]:
             biking_route_url="",
             driving_route_url="",
         )
-        listings.append(enrich_listing_with_esiea_commute(listing))
+        listings.append(listing)
         if len(listings) >= max_results:
             break
     return listings
@@ -789,15 +811,25 @@ def fetch_entreparticuliers_listings(max_results: int) -> list[Listing]:
         detail = ad.get("detail") or {}
         commune = ad.get("commune") or {}
         utilisateur = ad.get("utilisateur") or {}
+        rubrique_slug = ((ad.get("rubrique") or {}).get("slug") or "").strip().lower()
         title = collapse_whitespace(first_non_empty(ad.get("titre")))
+        description = collapse_whitespace(strip_html(first_non_empty(detail.get("description"))))
+        if rubrique_slug != "location":
+            continue
+        if looks_like_sale_listing(title, description):
+            continue
+        if to_float(ad.get("prix")) and float(ad.get("prix")) > 5000:
+            continue
+
         url_slug = slugify(title or f"annonce-{ad.get('id')}")
         detail_url = (
             f"{ENTREPARTICULIERS_BASE_URL}/annonces-immobilieres/appartement/location/"
             f"laval-53000/{url_slug}/ref-{ad.get('id')}"
         )
-        description = collapse_whitespace(strip_html(first_non_empty(detail.get("description"))))
         source_label = ((ad.get("source") or {}).get("label") or "").strip()
         detail_source_url = first_non_empty(detail.get("urlsource"), detail_url)
+        if looks_like_sale_listing(detail_source_url):
+            detail_source_url = detail_url
 
         listing = Listing(
             listing_id=str(ad.get("id") or detail_url),
@@ -834,7 +866,7 @@ def fetch_entreparticuliers_listings(max_results: int) -> list[Listing]:
             biking_route_url="",
             driving_route_url="",
         )
-        listings.append(enrich_listing_with_esiea_commute(listing))
+        listings.append(listing)
     return listings
 
 
@@ -844,70 +876,51 @@ def fetch_square_habitat_listings(max_results: int) -> list[Listing]:
     except Exception:
         return []
 
-    json_blob = ""
+    item_list_payload: dict[str, Any] | None = None
     for script_content in extract_script_contents(html_text):
-        if '"codeCategorie":"LOCATION"' in script_content and '"slugAgence":"laval-square-habitat"' in script_content:
-            json_blob = script_content
+        if '"@type": "ItemList"' in script_content and "Appartement à louer - LAVAL" in script_content:
+            try:
+                item_list_payload = json.loads(script_content)
+            except json.JSONDecodeError:
+                item_list_payload = None
             break
-    if not json_blob:
+    if not item_list_payload:
         return []
 
-    matches = re.findall(
-        r'(\{"codeRef":"[^"]+".*?"dateCreation":"[^"]+"\})',
-        json_blob,
-        flags=re.DOTALL,
-    )
     listings: list[Listing] = []
-    for raw_match in matches:
-        try:
-            ad = json.loads(raw_match)
-        except json.JSONDecodeError:
-            continue
-        if ad.get("codeCategorie") != "LOCATION":
-            continue
-        if ad.get("typeBien") != "appartement":
-            continue
-        if str(ad.get("codePostal", "")).strip() != "53000":
-            continue
-        detail_url = (
-            f"{SQUARE_HABITAT_BASE_URL}/square-habitat-anjou-maine/location-bien/"
-            f"laval-{ad.get('codeRef')}"
-        )
-        description = collapse_whitespace(strip_html(first_non_empty(ad.get("texteAnnonce"))))
-        phone = extract_first_group(r"(0\d(?:[ .]?\d{2}){4})", description or "")
-        availability = extract_first_group(
-            r"Disponible(?:\s+a\s+compter\s+du|\s+de\s+suite|\s+actuellement|)\s*([0-9]{2}/[0-9]{2}/[0-9]{4})",
-            description,
-            flags=re.IGNORECASE,
-        )
-        title = f"Appartement {ad.get('nbPieces') or '?'} pieces {format_area(to_float(ad.get('surfaceHabitable')))}"
+    for item in item_list_payload.get("itemListElement") or []:
+        product = item.get("item") or {}
+        offers = product.get("offers") or {}
+        title = collapse_whitespace(first_non_empty(product.get("name")))
+        rooms_text = extract_first_group(r"(\d+)\s*pi[eè]ce", title, flags=re.IGNORECASE)
+        detail_url = first_non_empty(product.get("url"), SQUARE_HABITAT_SEARCH_URL)
 
         listing = Listing(
-            listing_id=str(ad.get("codeRef") or detail_url),
+            listing_id=str(item.get("position") or detail_url),
             source_name="Square Habitat",
             title=title,
             generated_title=title,
-            city=first_non_empty(ad.get("ville"), "LAVAL").title(),
-            postal_code=first_non_empty(str(ad.get("codePostal") or "")),
+            city="Laval",
+            postal_code="53000",
             district="",
             property_type="flat",
-            price=to_float(ad.get("prix")),
-            charges=to_float(extract_first_group(r"Charges\s*:\s*([0-9]+)", description, flags=re.IGNORECASE)),
-            surface_area=to_float(ad.get("surfaceHabitable")),
-            rooms=to_int(ad.get("nbPieces")),
-            bedrooms=to_int(ad.get("nbChambres")),
-            furnished=True if "meubl" in description.lower() else None,
+            price=to_float(offers.get("price")),
+            charges=None,
+            surface_area=None,
+            rooms=to_int(rooms_text),
+            bedrooms=None,
+            furnished=None,
             energy_class="",
             greenhouse_gas_class="",
-            description=description,
-            modification_date=first_non_empty(ad.get("dateCreation")),
-            availability_date=availability,
-            phone=phone,
+            description="Annonce Square Habitat disponible sur le lien source.",
+            modification_date=None,
+            availability_date=None,
+            phone=None,
             agency_name="Square Habitat Laval",
             detail_api_url=detail_url,
             detail_page_url=detail_url,
-            latitude=to_float(ad.get("latitude")),
-            longitude=to_float(ad.get("longitude")),
+            latitude=None,
+            longitude=None,
             distance_to_esiea_km=None,
             walk_time_to_esiea_min=None,
             bike_time_to_esiea_min=None,
@@ -917,38 +930,91 @@ def fetch_square_habitat_listings(max_results: int) -> list[Listing]:
             biking_route_url="",
             driving_route_url="",
         )
-        listings.append(enrich_listing_with_esiea_commute(listing))
+        listings.append(listing)
         if len(listings) >= max_results:
             break
     return listings
 
 
+def listing_quality_score(listing: Listing) -> tuple[int, int, int, int, int, int]:
+    return (
+        1 if listing.latitude is not None and listing.longitude is not None else 0,
+        1 if listing.phone else 0,
+        1 if listing.charges is not None else 0,
+        1 if listing.availability_date else 0,
+        1 if listing.surface_area is not None else 0,
+        len(listing.description or ""),
+    )
+
+
 def dedupe_listings(listings: list[Listing]) -> list[Listing]:
     deduped: list[Listing] = []
-    seen: set[tuple[str, str, str, str]] = set()
+    key_to_index: dict[tuple[str, ...], int] = {}
     for listing in listings:
-        key = (
+        surface_key = ""
+        if listing.surface_area is not None:
+            surface_key = str(int(float(listing.surface_area)))
+        title_key = (
             listing.city.lower().strip(),
             str(int(listing.price)) if listing.price is not None else "",
-            str(int(round(listing.surface_area))) if listing.surface_area is not None else "",
+            surface_key,
             slugify(listing.display_title)[:80],
         )
-        if key in seen:
+        phone_digits = re.sub(r"\D", "", listing.phone or "")
+        contact_key = (
+            "contact",
+            listing.city.lower().strip(),
+            phone_digits,
+            str(int(listing.price)) if listing.price is not None else "",
+            surface_key,
+            str(listing.rooms or ""),
+        )
+        candidate_keys = [title_key]
+        if phone_digits and listing.price is not None and listing.surface_area is not None:
+            candidate_keys.append(contact_key)
+        if listing.display_title.startswith("Appartement à louer - LAVAL") and listing.price is not None:
+            candidate_keys.append(
+                (
+                    "generic-price-room",
+                    listing.city.lower().strip(),
+                    str(int(listing.price)),
+                    str(listing.rooms or ""),
+                )
+            )
+
+        existing_index = None
+        for candidate_key in candidate_keys:
+            if candidate_key in key_to_index:
+                existing_index = key_to_index[candidate_key]
+                break
+
+        if existing_index is None:
+            deduped.append(listing)
+            new_index = len(deduped) - 1
+            for candidate_key in candidate_keys:
+                key_to_index[candidate_key] = new_index
             continue
-        seen.add(key)
-        deduped.append(listing)
+
+        if listing_quality_score(listing) > listing_quality_score(deduped[existing_index]):
+            deduped[existing_index] = listing
+        for candidate_key in candidate_keys:
+            key_to_index[candidate_key] = existing_index
     return deduped
 
 
 def fetch_listings(zone_id: str, include_parking: bool, max_results: int) -> list[Listing]:
-    listings = fetch_bienici_listings(zone_id, include_parking=include_parking, max_results=max_results)
-    listings.extend(fetch_paruvendu_listings(max_results=max_results))
-    listings.extend(fetch_fnaim_listings(max_results=max_results))
-    listings.extend(fetch_entreparticuliers_listings(max_results=max_results))
-    listings.extend(fetch_square_habitat_listings(max_results=max_results))
+    bienici_limit = min(max_results, 20)
+    medium_source_limit = min(max_results, 10)
+    small_source_limit = min(max_results, 8)
+    listings = fetch_bienici_listings(zone_id, include_parking=include_parking, max_results=bienici_limit)
+    listings.extend(fetch_paruvendu_listings(max_results=small_source_limit))
+    listings.extend(fetch_fnaim_listings(max_results=medium_source_limit))
+    listings.extend(fetch_entreparticuliers_listings(max_results=medium_source_limit))
+    listings.extend(fetch_square_habitat_listings(max_results=small_source_limit))
     listings = dedupe_listings(listings)
     listings.sort(key=lambda item: (item.price is None, item.price or float("inf"), item.surface_area or float("inf")))
-    return listings[:max_results]
+    top_listings = listings[:max_results]
+    return [enrich_listing_with_esiea_commute(item) for item in top_listings]
 
 
 def to_float(value: Any) -> float | None:

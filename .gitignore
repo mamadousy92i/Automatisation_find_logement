@@ -4,3 +4,6 @@ logs/
 state/
 bienici-common.js
 bienici-index.js
+tmp_*.html
+tmp_*.json
+.DS_Store
