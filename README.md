@@ -83,3 +83,35 @@ Important:
 
 - `SMTP_PASSWORD` doit etre ajoute comme secret Render
 - Render a besoin d'un depot Git distant pour importer le blueprint
+
+## Deploiement GitHub Actions
+
+Un workflow quotidien est pret dans `.github/workflows/daily-logement.yml`.
+
+Il tourne:
+
+- tous les jours a `08:00 UTC`
+- et peut aussi etre lance a la main depuis l'onglet `Actions`
+
+Secrets GitHub a ajouter dans `Settings > Secrets and variables > Actions`:
+
+- `RECIPIENT_EMAIL`
+- `CITY_QUERY`
+- `CITY_POSTAL_CODE`
+- `MAX_RESULTS`
+- `INCLUDE_PARKING`
+- `SMTP_HOST`
+- `SMTP_PORT`
+- `SMTP_USERNAME`
+- `SMTP_PASSWORD`
+
+Valeurs recommandees:
+
+- `RECIPIENT_EMAIL=92mamadousy@gmail.com`
+- `CITY_QUERY=laval`
+- `CITY_POSTAL_CODE=53000`
+- `MAX_RESULTS=50`
+- `INCLUDE_PARKING=false`
+- `SMTP_HOST=smtp.gmail.com`
+- `SMTP_PORT=587`
+- `SMTP_USERNAME=92mamadousy@gmail.com`
