@@ -155,7 +155,8 @@ Ce bot vols:
 - cherche la periode `2026-08-01 -> 2026-09-10`
 - envoie en priorite les offres aller simple exactes si Google les expose
 - ajoute aussi des reperes mensuels de prix quand Google n'affiche pas d'aller simple exact sur la plage
-- recupere les tarifs officiels mensuels visibles sur Air Senegal pour Dakar -> Paris
+- recupere les tarifs officiels mensuels visibles sur Air Senegal uniquement s'ils sont identifies comme aller simple
+- ignore volontairement les tarifs aller-retour
 - ajoute une lecture intelligente avec compagnies fiables depuis Dakar, escales probables, aeroport d'arrivee et trajet vers Laval
 - met en avant `Air Senegal`, `Air France`, `Royal Air Maroc`, `TAP Air Portugal` et `Transavia` selon la ville d'arrivee
 

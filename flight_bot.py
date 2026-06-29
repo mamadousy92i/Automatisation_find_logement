@@ -441,7 +441,13 @@ def filter_official_fares(
     start_value = datetime.strptime(start_date, "%Y-%m-%d").date()
     end_value = datetime.strptime(end_date, "%Y-%m-%d").date()
     months_in_scope = build_month_scope(start_value, end_value)
-    filtered = [fare for fare in fares if fare.year == start_value.year and fare.month in months_in_scope]
+    filtered = [
+        fare
+        for fare in fares
+        if fare.year == start_value.year
+        and fare.month in months_in_scope
+        and is_one_way_trip_type(fare.trip_type)
+    ]
     filtered.sort(key=lambda item: (item.price_xof, item.month, item.destination_label, item.source_name))
     return filtered
 
@@ -523,12 +529,22 @@ def format_duration(hours: int | None) -> str:
 
 
 def translate_trip_type(value: str) -> str:
-    normalized = value.strip().lower()
+    normalized = normalize_trip_type(value)
     if normalized == "return":
         return "aller-retour"
-    if normalized in {"one way", "one-way", "oneway"}:
+    if is_one_way_trip_type(value):
         return "aller simple"
     return value.strip() or "non precise"
+
+
+def normalize_trip_type(value: str) -> str:
+    return value.strip().lower().replace("_", " ").replace("-", " ")
+
+
+def is_one_way_trip_type(value: str) -> bool:
+    normalized = normalize_trip_type(value)
+    compact = normalized.replace(" ", "")
+    return normalized in {"one way", "aller simple", "single"} or compact in {"oneway", "allersimple"}
 
 
 def format_airport(code: str) -> str:
@@ -588,12 +604,9 @@ def build_text_report(
         "",
         "Ce que le bot a vraiment trouve aujourd'hui:",
         f"- Prix trouves automatiquement: {len(monthly_signals)} repere(s) venant de Google Flights.",
-        f"- Prix trouves sur sites officiels: {len(official_fares)} tarif(s).",
-        f"- Billets exacts trouves avec heure de depart et d'arrivee: {len(offers)}.",
-        (
-            "- Air Senegal donne des tarifs officiels 'a partir de' par mois. "
-            "Quand le type indique est aller-retour, ce n'est pas encore un aller simple exact."
-        ),
+        f"- Prix trouves sur sites officiels: {len(official_fares)} tarif(s) aller simple.",
+        f"- Billets aller simple exacts trouves avec heure de depart et d'arrivee: {len(offers)}.",
+        "- Les tarifs aller-retour detectes sont ignores: ici on garde uniquement les allers simples.",
         "",
         "Important:",
         (
@@ -608,9 +621,9 @@ def build_text_report(
         best = recommendations[0]
         lines.extend(
             [
-                "Meilleure piste du jour:",
+                "Meilleure piste du jour pour un aller simple:",
                 (
-                    f"- Aller vers {best.destination_label} en {format_month_label(best.month)}. "
+                    f"- Aller simple vers {best.destination_label} en {format_month_label(best.month)}. "
                     f"Le prix repere commence autour de {format_price(best.low_price)} "
                     f"et peut monter vers {format_price(best.high_price)}."
                 ),
@@ -627,7 +640,7 @@ def build_text_report(
                     (
                         f"{index}. Destination: {recommendation.destination_label} en {format_month_label(recommendation.month)}"
                     ),
-                    f"   Prix repere trouve: entre {format_price(recommendation.low_price)} et {format_price(recommendation.high_price)}",
+                f"   Prix repere trouve pour la route: entre {format_price(recommendation.low_price)} et {format_price(recommendation.high_price)}",
                     f"   Aeroport d'arrivee: {recommendation.airport_label}",
                     f"   Apres l'avion pour rejoindre Laval: {recommendation.laval_transfer}",
                     f"   Explication simple: {recommendation.practical_note}",
@@ -635,7 +648,7 @@ def build_text_report(
                 ]
             )
             if recommendation.official_fares:
-                lines.append("   Prix officiels trouves automatiquement:")
+                lines.append("   Prix officiels aller simple trouves automatiquement:")
                 for fare in recommendation.official_fares:
                     original_price = format_price(fare.price_xof)
                     if fare.currency == "EUR":
@@ -674,7 +687,7 @@ def build_text_report(
         lines.append("")
 
     if official_fares:
-        lines.append("Details des prix officiels recuperes:")
+        lines.append("Details des prix officiels aller simple recuperes:")
         for fare in official_fares:
             price_label = format_price(fare.price_xof)
             if fare.currency == "EUR":
@@ -687,11 +700,12 @@ def build_text_report(
         lines.append("")
 
     if not offers:
-        lines.append("Aucun billet exact avec horaire complet n'a ete trouve automatiquement aujourd'hui.")
+        lines.append("Aucun billet aller simple exact avec horaire complet n'a ete trouve automatiquement aujourd'hui.")
         if official_fares:
-            lines.append("Sources officielles avec prix dans ce mail: Air Senegal.")
+            lines.append("Sources officielles avec prix aller simple dans ce mail: Air Senegal.")
         else:
-            lines.append("Sources prix exactes actuellement affichees dans ce mail: aucune compagnie officielle.")
+            lines.append("Sources prix exactes aller simple actuellement affichees dans ce mail: aucune compagnie officielle.")
+            lines.append("Si Air Senegal affiche seulement de l'aller-retour aujourd'hui, le bot l'ignore volontairement.")
         if source_names:
             lines.append(f"Sites officiels proposes pour verification: {', '.join(source_names)}.")
         return "\n".join(lines)
@@ -718,7 +732,7 @@ def build_html_official_fares(fares: tuple[OfficialFare, ...]) -> str:
         return ""
     rows: list[str] = [
         '<div style="border:1px solid #b7dfc2;border-radius:10px;padding:12px;margin:12px 0;background:#f4fff6;">',
-        '<p style="margin:0 0 8px 0;"><strong>Prix officiels trouves automatiquement:</strong></p>',
+        '<p style="margin:0 0 8px 0;"><strong>Prix officiels aller simple trouves automatiquement:</strong></p>',
     ]
     for fare in fares:
         price_label = format_price(fare.price_xof)
@@ -812,14 +826,14 @@ def build_html_report(
 
     if not cards:
         cards = [
-            "<p>Aucun billet exact avec horaire complet n'a ete trouve automatiquement aujourd'hui.</p>"
+            "<p>Aucun billet aller simple exact avec horaire complet n'a ete trouve automatiquement aujourd'hui.</p>"
         ]
 
     source_note = ""
     if source_names:
         source_note = f"<p><strong>Sites officiels proposes pour verification:</strong> {escape_html(', '.join(source_names))}</p>"
 
-    official_note = "Air Senegal" if official_fares else "aucune compagnie officielle pour l'instant"
+    official_note = "Air Senegal" if official_fares else "aucune compagnie officielle avec prix aller simple pour l'instant"
 
     return f"""
     <html>
@@ -830,10 +844,11 @@ def build_html_report(
         <div style="border:1px solid #ddd;border-radius:12px;padding:14px;margin:0 0 16px 0;background:#fff8e6;">
           <h3 style="margin:0 0 8px 0;">Ce que le bot a vraiment trouve aujourd'hui</h3>
           <p style="margin:4px 0;">Prix trouves automatiquement: <strong>{len(monthly_signals)} repere(s) venant de Google Flights.</strong></p>
-          <p style="margin:4px 0;">Prix trouves sur sites officiels: <strong>{len(official_fares)} tarif(s).</strong></p>
-          <p style="margin:4px 0;">Billets exacts avec heure de depart et d'arrivee: <strong>{len(offers)}</strong>.</p>
+          <p style="margin:4px 0;">Prix trouves sur sites officiels: <strong>{len(official_fares)} tarif(s) aller simple.</strong></p>
+          <p style="margin:4px 0;">Billets aller simple exacts avec heure de depart et d'arrivee: <strong>{len(offers)}</strong>.</p>
           <p style="margin:4px 0;">Source officielle avec prix dans ce mail: <strong>{escape_html(official_note)}</strong>.</p>
-          <p style="margin:10px 0 0 0;">Les sites officiels affiches plus bas sont des sites a verifier, sauf quand une carte indique clairement un prix officiel trouve.</p>
+          <p style="margin:10px 0 0 0;">Les tarifs aller-retour detectes sont ignores: ici on garde uniquement les allers simples.</p>
+          <p style="margin:6px 0 0 0;">Les sites officiels affiches plus bas sont des sites a verifier, sauf quand une carte indique clairement un prix officiel aller simple trouve.</p>
         </div>
         {source_note}
         {''.join(recommendation_cards)}
