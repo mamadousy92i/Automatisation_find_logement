@@ -1,0 +1,87 @@
+name: Daily Limoges Housing Email
+
+on:
+  schedule:
+    - cron: "15 12 * * *"
+  workflow_dispatch:
+    inputs:
+      recipient_email:
+        description: "Email destinataire pour le test manuel"
+        required: false
+        default: "92mamadousy@gmail.com"
+      city_query:
+        description: "Ville"
+        required: false
+        default: "limoges"
+      postal_code:
+        description: "Code postal"
+        required: false
+        default: "87000"
+      max_results:
+        description: "Nombre maximum de resultats"
+        required: false
+        default: "30"
+      reference_name:
+        description: "Nom du point de reference"
+        required: false
+        default: "Groupe 3iL"
+      reference_address:
+        description: "Adresse du point de reference"
+        required: false
+        default: "43 rue de Sainte-Anne, 87015 Limoges"
+
+jobs:
+  send-email:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RECIPIENT_EMAIL: ${{ github.event_name == 'workflow_dispatch' && inputs.recipient_email || 'sallayama.th10@gmail.com' }}
+      CITY_QUERY: ${{ github.event_name == 'workflow_dispatch' && inputs.city_query || 'limoges' }}
+      CITY_POSTAL_CODE: ${{ github.event_name == 'workflow_dispatch' && inputs.postal_code || '87000' }}
+      MAX_RESULTS: ${{ github.event_name == 'workflow_dispatch' && inputs.max_results || '30' }}
+      INCLUDE_PARKING: "false"
+      REFERENCE_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.reference_name || 'Groupe 3iL' }}
+      REFERENCE_ADDRESS: ${{ github.event_name == 'workflow_dispatch' && inputs.reference_address || '43 rue de Sainte-Anne, 87015 Limoges' }}
+      SMTP_HOST: ${{ secrets.SMTP_HOST }}
+      SMTP_PORT: ${{ secrets.SMTP_PORT }}
+      SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+      SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+    steps:
+      - name: Checkout automation code from lucifer_dev
+        uses: actions/checkout@v4
+        with:
+          ref: lucifer_dev
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate required secrets
+        run: |
+          for key in SMTP_HOST SMTP_PORT SMTP_USERNAME SMTP_PASSWORD; do
+            if [ -z "${!key}" ]; then
+              echo "Missing required secret: $key" >&2
+              exit 1
+            fi
+          done
+
+      - name: Run housing bot with one retry
+        run: |
+          python logement_bot.py \
+            --recipient "$RECIPIENT_EMAIL" \
+            --city-query "$CITY_QUERY" \
+            --postal-code "$CITY_POSTAL_CODE" \
+            --max-results "$MAX_RESULTS" \
+            --reference-name "$REFERENCE_NAME" \
+            --reference-address "$REFERENCE_ADDRESS" || {
+            echo "First attempt failed, retrying in 30 seconds..."
+            sleep 30
+            python logement_bot.py \
+              --recipient "$RECIPIENT_EMAIL" \
+              --city-query "$CITY_QUERY" \
+              --postal-code "$CITY_POSTAL_CODE" \
+              --max-results "$MAX_RESULTS" \
+              --reference-name "$REFERENCE_NAME" \
+              --reference-address "$REFERENCE_ADDRESS"
+          }
