@@ -1,0 +1,48 @@
+name: Daily Dakar France Flights Email
+
+on:
+  schedule:
+    - cron: "0 12 * * *"
+  workflow_dispatch:
+
+jobs:
+  send-email:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      FLIGHT_RECIPIENT_EMAIL: ${{ secrets.FLIGHT_RECIPIENT_EMAIL }}
+      FLIGHT_TARGETS: ${{ secrets.FLIGHT_TARGETS }}
+      FLIGHT_START_DATE: ${{ secrets.FLIGHT_START_DATE }}
+      FLIGHT_END_DATE: ${{ secrets.FLIGHT_END_DATE }}
+      FLIGHT_MAX_RESULTS: ${{ secrets.FLIGHT_MAX_RESULTS }}
+      FLIGHT_LOCALE: ${{ secrets.FLIGHT_LOCALE }}
+      FLIGHT_GL: ${{ secrets.FLIGHT_GL }}
+      SMTP_HOST: ${{ secrets.SMTP_HOST }}
+      SMTP_PORT: ${{ secrets.SMTP_PORT }}
+      SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+      SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate required secrets
+        run: |
+          for key in FLIGHT_RECIPIENT_EMAIL FLIGHT_TARGETS FLIGHT_START_DATE FLIGHT_END_DATE FLIGHT_MAX_RESULTS FLIGHT_LOCALE FLIGHT_GL SMTP_HOST SMTP_PORT SMTP_USERNAME SMTP_PASSWORD; do
+            if [ -z "${!key}" ]; then
+              echo "Missing required secret: $key" >&2
+              exit 1
+            fi
+          done
+
+      - name: Run flight bot with one retry
+        run: |
+          python flight_bot.py || {
+            echo "First attempt failed, retrying in 30 seconds..."
+            sleep 30
+            python flight_bot.py
+          }

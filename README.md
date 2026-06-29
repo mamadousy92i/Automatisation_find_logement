@@ -139,3 +139,43 @@ Valeurs recommandees:
 - `SMTP_HOST=smtp.gmail.com`
 - `SMTP_PORT=587`
 - `SMTP_USERNAME=92mamadousy@gmail.com`
+
+## Automatisation billets Dakar -> France
+
+Un second workflow quotidien est pret dans `.github/workflows/daily-flights-dakar-france.yml`.
+
+Il tourne:
+
+- tous les jours a `12:00 UTC`
+- et peut aussi etre lance a la main depuis l'onglet `Actions`
+
+Ce bot vols:
+
+- scrape `Google Flights` pour `Dakar -> Paris / Nantes / Rennes`
+- cherche la periode `2026-08-01 -> 2026-09-10`
+- envoie en priorite les offres aller simple exactes si Google les expose
+- ajoute aussi des reperes mensuels de prix quand Google n'affiche pas d'aller simple exact sur la plage
+
+Secrets GitHub a ajouter:
+
+- `FLIGHT_RECIPIENT_EMAIL`
+- `FLIGHT_TARGETS`
+- `FLIGHT_START_DATE`
+- `FLIGHT_END_DATE`
+- `FLIGHT_MAX_RESULTS`
+- `FLIGHT_LOCALE`
+- `FLIGHT_GL`
+- `SMTP_HOST`
+- `SMTP_PORT`
+- `SMTP_USERNAME`
+- `SMTP_PASSWORD`
+
+Valeurs recommandees:
+
+- `FLIGHT_RECIPIENT_EMAIL=92mamadousy@gmail.com`
+- `FLIGHT_TARGETS=paris,nantes,rennes`
+- `FLIGHT_START_DATE=2026-08-01`
+- `FLIGHT_END_DATE=2026-09-10`
+- `FLIGHT_MAX_RESULTS=15`
+- `FLIGHT_LOCALE=fr`
+- `FLIGHT_GL=SN`
