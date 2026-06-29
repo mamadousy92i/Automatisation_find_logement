@@ -25,6 +25,25 @@ DEFAULT_MAX_RESULTS = 15
 DEFAULT_LOCALE = "fr"
 DEFAULT_GL = "SN"
 GOOGLE_FLIGHTS_BASE_URL = "https://www.google.com/travel/flights"
+XOF_PER_EUR = 655.957
+
+
+@dataclass(frozen=True)
+class OfficialFare:
+    source_name: str
+    route_slug: str
+    month: int
+    year: int
+    price: int
+    currency: str
+    price_xof: int
+    trip_type: str
+    official_url: str
+    last_seen: str | None
+
+    @property
+    def destination_label(self) -> str:
+        return self.route_slug.replace("-", " ").title()
 
 
 @dataclass(frozen=True)
@@ -92,6 +111,7 @@ class SmartRecommendation:
     carriers: tuple[TrustedCarrier, ...]
     route_url: str
     rank_score: int
+    official_fares: tuple[OfficialFare, ...]
 
 
 TRUSTED_ROUTE_PROFILES: dict[str, RouteProfile] = {
@@ -235,8 +255,38 @@ def build_route_url(route_slug: str, locale: str, gl: str) -> str:
     return f"{GOOGLE_FLIGHTS_BASE_URL}/flights-from-dakar-to-{route_slug}.html?hl={locale}&gl={gl}"
 
 
+def build_air_senegal_route_url(route_slug: str) -> str:
+    return f"https://flights.flyairsenegal.com/en/flights-from-dakar-to-{route_slug}"
+
+
 def parse_airline_values(raw: str) -> tuple[str, ...]:
     return tuple(value for value in re.findall(r'"([^"]+)"', raw) if value)
+
+
+def parse_month_name(value: str) -> int | None:
+    months = {
+        "january": 1,
+        "february": 2,
+        "march": 3,
+        "april": 4,
+        "may": 5,
+        "june": 6,
+        "july": 7,
+        "august": 8,
+        "september": 9,
+        "october": 10,
+        "november": 11,
+        "december": 12,
+    }
+    return months.get(value.strip().lower())
+
+
+def normalize_price_to_xof(value: int, currency: str) -> int:
+    if currency.upper() == "XOF":
+        return value
+    if currency.upper() == "EUR":
+        return int(round(value * XOF_PER_EUR))
+    return value
 
 
 def extract_one_way_offers(text: str, route_slug: str, route_url: str) -> list[FlightOffer]:
@@ -314,6 +364,45 @@ def extract_monthly_signals(text: str, route_slug: str, route_url: str) -> list[
     return signals
 
 
+def extract_air_senegal_fares(text: str, route_slug: str, official_url: str) -> list[OfficialFare]:
+    pattern = re.compile(
+        r'aria-label="slide \d+ of \d+, (?P<month>[A-Za-z]+) (?P<year>\d{4}), '
+        r'From (?P<currency>[A-Z]{3}) (?P<price>[0-9,]+).*?'
+        r'(?:Viewed (?P<last_seen>[^,]+), )?Flight Type (?P<trip_type>[^|"]+)',
+        re.S,
+    )
+    fares: list[OfficialFare] = []
+    seen: set[tuple[int, int, int, str]] = set()
+    for match in pattern.finditer(text):
+        month = parse_month_name(match.group("month"))
+        if month is None:
+            continue
+        price = int(match.group("price").replace(",", ""))
+        currency = match.group("currency").upper()
+        year = int(match.group("year"))
+        trip_type = match.group("trip_type").strip()
+        dedupe_key = (month, year, price, trip_type)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        fares.append(
+            OfficialFare(
+                source_name="Air Senegal",
+                route_slug=route_slug,
+                month=month,
+                year=year,
+                price=price,
+                currency=currency,
+                price_xof=normalize_price_to_xof(price, currency),
+                trip_type=trip_type,
+                official_url=official_url,
+                last_seen=match.group("last_seen"),
+            )
+        )
+    fares.sort(key=lambda item: (item.price_xof, item.month))
+    return fares
+
+
 def filter_offers(
     offers: list[FlightOffer],
     start_date: str,
@@ -344,7 +433,23 @@ def filter_monthly_signals(
     return filtered
 
 
-def build_smart_recommendations(monthly_signals: list[MonthlyFareSignal]) -> list[SmartRecommendation]:
+def filter_official_fares(
+    fares: list[OfficialFare],
+    start_date: str,
+    end_date: str,
+) -> list[OfficialFare]:
+    start_value = datetime.strptime(start_date, "%Y-%m-%d").date()
+    end_value = datetime.strptime(end_date, "%Y-%m-%d").date()
+    months_in_scope = build_month_scope(start_value, end_value)
+    filtered = [fare for fare in fares if fare.year == start_value.year and fare.month in months_in_scope]
+    filtered.sort(key=lambda item: (item.price_xof, item.month, item.destination_label, item.source_name))
+    return filtered
+
+
+def build_smart_recommendations(
+    monthly_signals: list[MonthlyFareSignal],
+    official_fares: list[OfficialFare],
+) -> list[SmartRecommendation]:
     best_by_route_month: dict[tuple[str, int], MonthlyFareSignal] = {}
     for signal in monthly_signals:
         key = (signal.route_slug, signal.month)
@@ -353,9 +458,16 @@ def build_smart_recommendations(monthly_signals: list[MonthlyFareSignal]) -> lis
             best_by_route_month[key] = signal
 
     route_penalties = {"nantes": 0, "paris": 15000, "rennes": 25000}
+    official_by_route_month: dict[tuple[str, int], list[OfficialFare]] = {}
+    for fare in official_fares:
+        official_by_route_month.setdefault((fare.route_slug, fare.month), []).append(fare)
+
     recommendations: list[SmartRecommendation] = []
     for signal in best_by_route_month.values():
         profile = TRUSTED_ROUTE_PROFILES.get(signal.route_slug)
+        matching_official_fares = tuple(official_by_route_month.get((signal.route_slug, signal.month), []))
+        best_official_price = min((fare.price_xof for fare in matching_official_fares), default=signal.low_price)
+        ranking_price = min(signal.low_price, best_official_price)
         if profile is None:
             continue
         recommendations.append(
@@ -371,7 +483,8 @@ def build_smart_recommendations(monthly_signals: list[MonthlyFareSignal]) -> lis
                 reliability_note=profile.reliability_note,
                 carriers=profile.carriers,
                 route_url=signal.route_url,
-                rank_score=signal.low_price + route_penalties.get(signal.route_slug, 30000),
+                rank_score=ranking_price + route_penalties.get(signal.route_slug, 30000),
+                official_fares=matching_official_fares,
             )
         )
     recommendations.sort(key=lambda item: (item.rank_score, item.low_price, item.month))
@@ -407,6 +520,15 @@ def format_duration(hours: int | None) -> str:
     if hours is None:
         return "non precise"
     return f"{hours} h"
+
+
+def translate_trip_type(value: str) -> str:
+    normalized = value.strip().lower()
+    if normalized == "return":
+        return "aller-retour"
+    if normalized in {"one way", "one-way", "oneway"}:
+        return "aller simple"
+    return value.strip() or "non precise"
 
 
 def format_airport(code: str) -> str:
@@ -452,6 +574,7 @@ def official_source_names(recommendations: list[SmartRecommendation]) -> list[st
 def build_text_report(
     offers: list[FlightOffer],
     monthly_signals: list[MonthlyFareSignal],
+    official_fares: list[OfficialFare],
     recommendations: list[SmartRecommendation],
     generated_at: datetime,
     start_date: str,
@@ -465,16 +588,17 @@ def build_text_report(
         "",
         "Ce que le bot a vraiment trouve aujourd'hui:",
         f"- Prix trouves automatiquement: {len(monthly_signals)} repere(s) venant de Google Flights.",
+        f"- Prix trouves sur sites officiels: {len(official_fares)} tarif(s).",
         f"- Billets exacts trouves avec heure de depart et d'arrivee: {len(offers)}.",
         (
-            "- Prix exacts trouves directement sur les sites Air Senegal, Air France, Royal Air Maroc, "
-            "TAP Air Portugal ou Transavia: 0 pour l'instant."
+            "- Air Senegal donne des tarifs officiels 'a partir de' par mois. "
+            "Quand le type indique est aller-retour, ce n'est pas encore un aller simple exact."
         ),
         "",
         "Important:",
         (
-            "- Les sites officiels affiches plus bas ne sont pas encore des annonces avec prix exact. "
-            "Ce sont les meilleurs sites a verifier pour acheter le billet."
+        "- Les sites officiels affiches plus bas ne sont pas encore des annonces avec prix exact. "
+            "Sauf quand une carte indique clairement un prix officiel trouve."
         ),
         "- Le prix repere sert a savoir si une compagnie propose un prix correct ou trop cher.",
         "",
@@ -508,9 +632,25 @@ def build_text_report(
                     f"   Apres l'avion pour rejoindre Laval: {recommendation.laval_transfer}",
                     f"   Explication simple: {recommendation.practical_note}",
                     f"   Source du prix repere: Google Flights ({recommendation.route_url})",
-                    "   Sites officiels a verifier maintenant:",
                 ]
             )
+            if recommendation.official_fares:
+                lines.append("   Prix officiels trouves automatiquement:")
+                for fare in recommendation.official_fares:
+                    original_price = format_price(fare.price_xof)
+                    if fare.currency == "EUR":
+                        original_price = f"{fare.price} EUR environ {format_price(fare.price_xof)}"
+                    lines.extend(
+                        [
+                            f"   - {fare.source_name}: {original_price}",
+                            f"     Mois: {format_month_label(fare.month)} {fare.year}",
+                            f"     Type affiche par la compagnie: {translate_trip_type(fare.trip_type)}",
+                            f"     Lien officiel: {fare.official_url}",
+                        ]
+                    )
+                    if fare.last_seen:
+                        lines.append(f"     Vu par le site: {fare.last_seen}")
+            lines.append("   Sites officiels a verifier maintenant:")
             for carrier in recommendation.carriers:
                 lines.extend(
                     [
@@ -533,9 +673,25 @@ def build_text_report(
             lines.append(f"  Lien: {signal.route_url}")
         lines.append("")
 
+    if official_fares:
+        lines.append("Details des prix officiels recuperes:")
+        for fare in official_fares:
+            price_label = format_price(fare.price_xof)
+            if fare.currency == "EUR":
+                price_label = f"{fare.price} EUR environ {format_price(fare.price_xof)}"
+            lines.append(
+                f"- {fare.source_name} vers {fare.destination_label} en {format_month_label(fare.month)} {fare.year}: "
+                f"{price_label} ({translate_trip_type(fare.trip_type)})"
+            )
+            lines.append(f"  Lien officiel: {fare.official_url}")
+        lines.append("")
+
     if not offers:
         lines.append("Aucun billet exact avec horaire complet n'a ete trouve automatiquement aujourd'hui.")
-        lines.append("Sources prix exactes actuellement affichees dans ce mail: aucune compagnie officielle.")
+        if official_fares:
+            lines.append("Sources officielles avec prix dans ce mail: Air Senegal.")
+        else:
+            lines.append("Sources prix exactes actuellement affichees dans ce mail: aucune compagnie officielle.")
         if source_names:
             lines.append(f"Sites officiels proposes pour verification: {', '.join(source_names)}.")
         return "\n".join(lines)
@@ -557,9 +713,37 @@ def build_text_report(
     return "\n".join(lines).strip()
 
 
+def build_html_official_fares(fares: tuple[OfficialFare, ...]) -> str:
+    if not fares:
+        return ""
+    rows: list[str] = [
+        '<div style="border:1px solid #b7dfc2;border-radius:10px;padding:12px;margin:12px 0;background:#f4fff6;">',
+        '<p style="margin:0 0 8px 0;"><strong>Prix officiels trouves automatiquement:</strong></p>',
+    ]
+    for fare in fares:
+        price_label = format_price(fare.price_xof)
+        if fare.currency == "EUR":
+            price_label = f"{fare.price} EUR environ {format_price(fare.price_xof)}"
+        last_seen = f"<br><span>Vu par le site: {escape_html(fare.last_seen)}</span>" if fare.last_seen else ""
+        rows.append(
+            f"""
+            <div style="margin:8px 0;">
+              <strong>{escape_html(fare.source_name)}</strong>: {escape_html(price_label)}
+              <br><span>Mois: {escape_html(format_month_label(fare.month))} {fare.year}</span>
+              <br><span>Type affiche par la compagnie: {escape_html(translate_trip_type(fare.trip_type))}</span>
+              {last_seen}
+              <br><a href="{escape_html(fare.official_url)}">Voir sur le site officiel</a>
+            </div>
+            """.strip()
+        )
+    rows.append("</div>")
+    return "".join(rows)
+
+
 def build_html_report(
     offers: list[FlightOffer],
     monthly_signals: list[MonthlyFareSignal],
+    official_fares: list[OfficialFare],
     recommendations: list[SmartRecommendation],
     generated_at: datetime,
     start_date: str,
@@ -580,7 +764,7 @@ def build_html_report(
                   <br><a href="{escape_html(carrier.official_url)}">Verifier sur le site officiel</a>
                 </li>
                 """.strip()
-            )
+        )
         recommendation_cards.append(
             f"""
             <div style="border:2px solid #1f6feb;border-radius:12px;padding:16px;margin:0 0 16px 0;background:#f6fbff;">
@@ -590,6 +774,7 @@ def build_html_report(
               <p style="margin:4px 0;"><strong>Apres l'avion pour rejoindre Laval:</strong> {escape_html(recommendation.laval_transfer)}</p>
               <p style="margin:4px 0;"><strong>Explication simple:</strong> {escape_html(recommendation.practical_note)}</p>
               <p style="margin:10px 0;"><a href="{escape_html(recommendation.route_url)}">Voir le prix repere sur Google Flights</a></p>
+              {build_html_official_fares(recommendation.official_fares)}
               <p style="margin:10px 0 4px 0;"><strong>Sites officiels a verifier maintenant:</strong></p>
               <ul style="padding-left:18px;margin:8px 0 0 0;">{''.join(carrier_rows)}</ul>
             </div>
@@ -634,6 +819,8 @@ def build_html_report(
     if source_names:
         source_note = f"<p><strong>Sites officiels proposes pour verification:</strong> {escape_html(', '.join(source_names))}</p>"
 
+    official_note = "Air Senegal" if official_fares else "aucune compagnie officielle pour l'instant"
+
     return f"""
     <html>
       <body style="font-family:Arial,sans-serif;line-height:1.5;color:#222;">
@@ -643,9 +830,10 @@ def build_html_report(
         <div style="border:1px solid #ddd;border-radius:12px;padding:14px;margin:0 0 16px 0;background:#fff8e6;">
           <h3 style="margin:0 0 8px 0;">Ce que le bot a vraiment trouve aujourd'hui</h3>
           <p style="margin:4px 0;">Prix trouves automatiquement: <strong>{len(monthly_signals)} repere(s) venant de Google Flights.</strong></p>
+          <p style="margin:4px 0;">Prix trouves sur sites officiels: <strong>{len(official_fares)} tarif(s).</strong></p>
           <p style="margin:4px 0;">Billets exacts avec heure de depart et d'arrivee: <strong>{len(offers)}</strong>.</p>
-          <p style="margin:4px 0;">Prix exacts trouves directement sur les sites Air Senegal, Air France, Royal Air Maroc, TAP Air Portugal ou Transavia: <strong>0 pour l'instant</strong>.</p>
-          <p style="margin:10px 0 0 0;">Les sites officiels affiches plus bas ne sont pas encore des annonces avec prix exact. Ce sont les meilleurs sites a verifier pour acheter le billet.</p>
+          <p style="margin:4px 0;">Source officielle avec prix dans ce mail: <strong>{escape_html(official_note)}</strong>.</p>
+          <p style="margin:10px 0 0 0;">Les sites officiels affiches plus bas sont des sites a verifier, sauf quand une carte indique clairement un prix officiel trouve.</p>
         </div>
         {source_note}
         {''.join(recommendation_cards)}
@@ -661,15 +849,29 @@ def collect_route_data(
     targets: list[str],
     locale: str,
     gl: str,
-) -> tuple[list[FlightOffer], list[MonthlyFareSignal]]:
+) -> tuple[list[FlightOffer], list[MonthlyFareSignal], list[OfficialFare]]:
     offers: list[FlightOffer] = []
     monthly_signals: list[MonthlyFareSignal] = []
+    official_fares: list[OfficialFare] = []
     for route_slug in targets:
         route_url = build_route_url(route_slug, locale=locale, gl=gl)
         html = fetch_html(route_url)
         offers.extend(extract_one_way_offers(html, route_slug=route_slug, route_url=route_url))
         monthly_signals.extend(extract_monthly_signals(html, route_slug=route_slug, route_url=route_url))
-    return offers, monthly_signals
+
+        air_senegal_url = build_air_senegal_route_url(route_slug)
+        try:
+            air_senegal_html = fetch_html(air_senegal_url)
+            official_fares.extend(
+                extract_air_senegal_fares(
+                    air_senegal_html,
+                    route_slug=route_slug,
+                    official_url=air_senegal_url,
+                )
+            )
+        except Exception as exc:
+            print(f"AVERTISSEMENT Air Senegal {route_slug}: {exc}", file=sys.stderr)
+    return offers, monthly_signals, official_fares
 
 
 def main() -> int:
@@ -687,22 +889,38 @@ def main() -> int:
     targets = [item.strip().lower() for item in str(targets_raw).split(",") if item.strip()]
 
     try:
-        offers, monthly_signals = collect_route_data(targets=targets, locale=locale, gl=gl)
+        offers, monthly_signals, official_fares = collect_route_data(targets=targets, locale=locale, gl=gl)
         offers = filter_offers(offers, start_date=start_date, end_date=end_date, max_results=max_results)
         monthly_signals = filter_monthly_signals(monthly_signals, start_date=start_date, end_date=end_date)
-        recommendations = build_smart_recommendations(monthly_signals)
+        official_fares = filter_official_fares(official_fares, start_date=start_date, end_date=end_date)
+        recommendations = build_smart_recommendations(monthly_signals, official_fares)
     except Exception as exc:
         print(f"ERREUR collecte vols: {exc}", file=sys.stderr)
         return 1
 
     generated_at = datetime.now()
-    text_report = build_text_report(offers, monthly_signals, recommendations, generated_at, start_date, end_date)
-    html_report = build_html_report(offers, monthly_signals, recommendations, generated_at, start_date, end_date)
+    text_report = build_text_report(offers, monthly_signals, official_fares, recommendations, generated_at, start_date, end_date)
+    html_report = build_html_report(offers, monthly_signals, official_fares, recommendations, generated_at, start_date, end_date)
 
     if args.json:
         payload = {
             "recipient": recipient,
             "count": len(offers),
+            "official_fares": [
+                {
+                    "source_name": fare.source_name,
+                    "route_slug": fare.route_slug,
+                    "month": fare.month,
+                    "year": fare.year,
+                    "price": fare.price,
+                    "currency": fare.currency,
+                    "price_xof": fare.price_xof,
+                    "trip_type": fare.trip_type,
+                    "official_url": fare.official_url,
+                    "last_seen": fare.last_seen,
+                }
+                for fare in official_fares
+            ],
             "recommendations": [
                 {
                     "route_slug": recommendation.route_slug,
