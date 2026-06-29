@@ -28,6 +28,25 @@ GOOGLE_FLIGHTS_BASE_URL = "https://www.google.com/travel/flights"
 
 
 @dataclass(frozen=True)
+class TrustedCarrier:
+    name: str
+    official_url: str
+    typical_stops: str
+    typical_route: str
+    note: str
+
+
+@dataclass(frozen=True)
+class RouteProfile:
+    route_slug: str
+    airport_label: str
+    laval_transfer: str
+    practical_note: str
+    reliability_note: str
+    carriers: tuple[TrustedCarrier, ...]
+
+
+@dataclass(frozen=True)
 class FlightOffer:
     source_name: str
     route_slug: str
@@ -57,6 +76,116 @@ class MonthlyFareSignal:
     @property
     def destination_label(self) -> str:
         return self.route_slug.replace("-", " ").title()
+
+
+@dataclass(frozen=True)
+class SmartRecommendation:
+    route_slug: str
+    destination_label: str
+    month: int
+    low_price: int
+    high_price: int
+    airport_label: str
+    laval_transfer: str
+    practical_note: str
+    reliability_note: str
+    carriers: tuple[TrustedCarrier, ...]
+    route_url: str
+    rank_score: int
+
+
+TRUSTED_ROUTE_PROFILES: dict[str, RouteProfile] = {
+    "paris": RouteProfile(
+        route_slug="paris",
+        airport_label="Paris CDG / ORY",
+        laval_transfer="Train vers Laval via Paris-Montparnasse, souvent autour de 1h15 a 1h40 apres le transfert aeroport -> gare.",
+        practical_note="Souvent le meilleur prix et le plus de choix; il faut juste gerer le transfert dans Paris.",
+        reliability_note="Tres bonne option si le prix est nettement moins cher que Nantes/Rennes.",
+        carriers=(
+            TrustedCarrier(
+                name="Air Senegal",
+                official_url="https://www.flyairsenegal.com/",
+                typical_stops="direct",
+                typical_route="DSS -> CDG",
+                note="Compagnie nationale, route Dakar-Paris a verifier en premier pour un aller simple direct.",
+            ),
+            TrustedCarrier(
+                name="Air France",
+                official_url="https://wwws.airfrance.sn/",
+                typical_stops="direct",
+                typical_route="DSS -> CDG",
+                note="Compagnie solide pour Paris, souvent plus chere mais directe.",
+            ),
+            TrustedCarrier(
+                name="Royal Air Maroc",
+                official_url="https://www.royalairmaroc.com/",
+                typical_stops="1 escale",
+                typical_route="DSS -> Casablanca -> Paris",
+                note="Souvent competitive si l'escale a Casablanca reste raisonnable.",
+            ),
+            TrustedCarrier(
+                name="TAP Air Portugal",
+                official_url="https://www.flytap.com/",
+                typical_stops="1 escale",
+                typical_route="DSS -> Lisbonne -> Paris",
+                note="Bonne alternative si le prix baisse sur ORY/CDG.",
+            ),
+        ),
+    ),
+    "nantes": RouteProfile(
+        route_slug="nantes",
+        airport_label="Nantes Atlantique (NTE)",
+        laval_transfer="Nantes -> Laval en train ou train + correspondance, souvent autour de 1h30 a 2h30 selon l'horaire.",
+        practical_note="Tres interessant pour Laval si le prix reste proche de Paris, car l'arrivee est plus simple.",
+        reliability_note="Bon compromis prix/praticite quand il y a une offre correcte.",
+        carriers=(
+            TrustedCarrier(
+                name="Transavia",
+                official_url="https://www.transavia.com/",
+                typical_stops="souvent direct selon saison",
+                typical_route="DSS -> NTE",
+                note="A verifier en priorite pour Nantes quand Google signale un tarif bas.",
+            ),
+            TrustedCarrier(
+                name="Royal Air Maroc",
+                official_url="https://www.royalairmaroc.com/",
+                typical_stops="1 escale",
+                typical_route="DSS -> Casablanca -> Nantes",
+                note="Alternative fiable si le direct n'est pas disponible.",
+            ),
+            TrustedCarrier(
+                name="Air France",
+                official_url="https://wwws.airfrance.sn/",
+                typical_stops="1 escale",
+                typical_route="DSS -> Paris -> Nantes",
+                note="Fiable, mais a comparer car le trajet peut revenir plus cher.",
+            ),
+        ),
+    ),
+    "rennes": RouteProfile(
+        route_slug="rennes",
+        airport_label="Rennes Bretagne (RNS)",
+        laval_transfer="Rennes -> Laval est court en train ou voiture, souvent autour de 1h a 1h30.",
+        practical_note="Tres pratique pour Laval, mais les vols Dakar-Rennes sont souvent plus rares et plus chers.",
+        reliability_note="A garder comme option confort si l'ecart de prix avec Paris/Nantes est faible.",
+        carriers=(
+            TrustedCarrier(
+                name="Air France",
+                official_url="https://wwws.airfrance.sn/",
+                typical_stops="1 escale",
+                typical_route="DSS -> Paris -> Rennes",
+                note="Option la plus logique si Rennes apparait a un prix acceptable.",
+            ),
+            TrustedCarrier(
+                name="Royal Air Maroc",
+                official_url="https://www.royalairmaroc.com/",
+                typical_stops="1 a 2 escales",
+                typical_route="DSS -> Casablanca -> France -> Rennes",
+                note="A verifier seulement si le prix est vraiment interessant.",
+            ),
+        ),
+    ),
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -215,6 +344,40 @@ def filter_monthly_signals(
     return filtered
 
 
+def build_smart_recommendations(monthly_signals: list[MonthlyFareSignal]) -> list[SmartRecommendation]:
+    best_by_route_month: dict[tuple[str, int], MonthlyFareSignal] = {}
+    for signal in monthly_signals:
+        key = (signal.route_slug, signal.month)
+        current = best_by_route_month.get(key)
+        if current is None or signal.low_price < current.low_price:
+            best_by_route_month[key] = signal
+
+    route_penalties = {"nantes": 0, "paris": 15000, "rennes": 25000}
+    recommendations: list[SmartRecommendation] = []
+    for signal in best_by_route_month.values():
+        profile = TRUSTED_ROUTE_PROFILES.get(signal.route_slug)
+        if profile is None:
+            continue
+        recommendations.append(
+            SmartRecommendation(
+                route_slug=signal.route_slug,
+                destination_label=signal.destination_label,
+                month=signal.month,
+                low_price=signal.low_price,
+                high_price=signal.high_price,
+                airport_label=profile.airport_label,
+                laval_transfer=profile.laval_transfer,
+                practical_note=profile.practical_note,
+                reliability_note=profile.reliability_note,
+                carriers=profile.carriers,
+                route_url=signal.route_url,
+                rank_score=signal.low_price + route_penalties.get(signal.route_slug, 30000),
+            )
+        )
+    recommendations.sort(key=lambda item: (item.rank_score, item.low_price, item.month))
+    return recommendations
+
+
 def build_month_scope(start_value: date, end_value: date) -> set[int]:
     months: set[int] = set()
     cursor = date(start_value.year, start_value.month, 1)
@@ -267,6 +430,7 @@ def format_month_label(month: int) -> str:
 def build_text_report(
     offers: list[FlightOffer],
     monthly_signals: list[MonthlyFareSignal],
+    recommendations: list[SmartRecommendation],
     generated_at: datetime,
     start_date: str,
     end_date: str,
@@ -279,6 +443,47 @@ def build_text_report(
         f"Reperes mensuels: {len(monthly_signals)}",
         "",
     ]
+
+    if recommendations:
+        best = recommendations[0]
+        lines.extend(
+            [
+                "Conclusion rapide:",
+                (
+                    f"- Option la plus interessante detectee: {best.destination_label} en "
+                    f"{format_month_label(best.month)} a partir de {format_price(best.low_price)} "
+                    f"(plage haute observee {format_price(best.high_price)})."
+                ),
+                f"- Arrivee: {best.airport_label}.",
+                f"- Pour Laval: {best.laval_transfer}",
+                f"- A verifier d'abord chez: {', '.join(carrier.name for carrier in best.carriers[:3])}.",
+                "",
+                "Options fiables a verifier:",
+            ]
+        )
+        for index, recommendation in enumerate(recommendations, start=1):
+            lines.extend(
+                [
+                    (
+                        f"{index}. {recommendation.destination_label} | {format_month_label(recommendation.month)} | "
+                        f"prix repere {format_price(recommendation.low_price)} a {format_price(recommendation.high_price)}"
+                    ),
+                    f"   Arrivee: {recommendation.airport_label}",
+                    f"   Pour Laval: {recommendation.laval_transfer}",
+                    f"   Lecture: {recommendation.practical_note}",
+                    f"   Source prix: {recommendation.route_url}",
+                    "   Compagnies fiables:",
+                ]
+            )
+            for carrier in recommendation.carriers:
+                lines.extend(
+                    [
+                        f"   - {carrier.name}: {carrier.typical_route} | {carrier.typical_stops}",
+                        f"     Site officiel: {carrier.official_url}",
+                        f"     Note: {carrier.note}",
+                    ]
+                )
+            lines.append("")
 
     if monthly_signals:
         lines.append("Reperes mensuels Google Flights sur ta plage:")
@@ -315,10 +520,38 @@ def build_text_report(
 def build_html_report(
     offers: list[FlightOffer],
     monthly_signals: list[MonthlyFareSignal],
+    recommendations: list[SmartRecommendation],
     generated_at: datetime,
     start_date: str,
     end_date: str,
 ) -> str:
+    recommendation_cards: list[str] = []
+    for index, recommendation in enumerate(recommendations, start=1):
+        carrier_rows = []
+        for carrier in recommendation.carriers:
+            carrier_rows.append(
+                f"""
+                <li style="margin:8px 0;">
+                  <strong>{escape_html(carrier.name)}</strong> - {escape_html(carrier.typical_route)}
+                  <br><span>{escape_html(carrier.typical_stops)} | {escape_html(carrier.note)}</span>
+                  <br><a href="{escape_html(carrier.official_url)}">Site officiel</a>
+                </li>
+                """.strip()
+            )
+        recommendation_cards.append(
+            f"""
+            <div style="border:2px solid #1f6feb;border-radius:12px;padding:16px;margin:0 0 16px 0;background:#f6fbff;">
+              <h3 style="margin:0 0 8px 0;">{index}. {escape_html(recommendation.destination_label)} - {escape_html(format_month_label(recommendation.month))}</h3>
+              <p style="margin:4px 0;"><strong>Prix repere:</strong> {escape_html(format_price(recommendation.low_price))} a {escape_html(format_price(recommendation.high_price))}</p>
+              <p style="margin:4px 0;"><strong>Arrivee:</strong> {escape_html(recommendation.airport_label)}</p>
+              <p style="margin:4px 0;"><strong>Pour Laval:</strong> {escape_html(recommendation.laval_transfer)}</p>
+              <p style="margin:4px 0;"><strong>Lecture:</strong> {escape_html(recommendation.practical_note)}</p>
+              <p style="margin:10px 0;"><a href="{escape_html(recommendation.route_url)}">Comparer sur Google Flights</a></p>
+              <ul style="padding-left:18px;margin:8px 0 0 0;">{''.join(carrier_rows)}</ul>
+            </div>
+            """.strip()
+        )
+
     signal_cards: list[str] = []
     for signal in monthly_signals:
         signal_cards.append(
@@ -362,6 +595,7 @@ def build_html_report(
         <p><strong>Source:</strong> Google Flights (web scraping)</p>
         <p><strong>Offres retenues:</strong> {len(offers)}</p>
         <p><strong>Reperes mensuels:</strong> {len(monthly_signals)}</p>
+        {''.join(recommendation_cards)}
         {''.join(signal_cards)}
         {''.join(cards)}
       </body>
@@ -402,18 +636,42 @@ def main() -> int:
         offers, monthly_signals = collect_route_data(targets=targets, locale=locale, gl=gl)
         offers = filter_offers(offers, start_date=start_date, end_date=end_date, max_results=max_results)
         monthly_signals = filter_monthly_signals(monthly_signals, start_date=start_date, end_date=end_date)
+        recommendations = build_smart_recommendations(monthly_signals)
     except Exception as exc:
         print(f"ERREUR collecte vols: {exc}", file=sys.stderr)
         return 1
 
     generated_at = datetime.now()
-    text_report = build_text_report(offers, monthly_signals, generated_at, start_date, end_date)
-    html_report = build_html_report(offers, monthly_signals, generated_at, start_date, end_date)
+    text_report = build_text_report(offers, monthly_signals, recommendations, generated_at, start_date, end_date)
+    html_report = build_html_report(offers, monthly_signals, recommendations, generated_at, start_date, end_date)
 
     if args.json:
         payload = {
             "recipient": recipient,
             "count": len(offers),
+            "recommendations": [
+                {
+                    "route_slug": recommendation.route_slug,
+                    "destination_label": recommendation.destination_label,
+                    "month": recommendation.month,
+                    "low_price": recommendation.low_price,
+                    "high_price": recommendation.high_price,
+                    "airport_label": recommendation.airport_label,
+                    "laval_transfer": recommendation.laval_transfer,
+                    "carriers": [
+                        {
+                            "name": carrier.name,
+                            "official_url": carrier.official_url,
+                            "typical_stops": carrier.typical_stops,
+                            "typical_route": carrier.typical_route,
+                            "note": carrier.note,
+                        }
+                        for carrier in recommendation.carriers
+                    ],
+                    "route_url": recommendation.route_url,
+                }
+                for recommendation in recommendations
+            ],
             "monthly_signals": [
                 {
                     "route_slug": signal.route_slug,
