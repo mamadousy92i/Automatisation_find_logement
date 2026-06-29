@@ -60,6 +60,9 @@ OSRM_BASE_URL = "https://router.project-osrm.org/route/v1"
 WALKING_SPEED_KMH = 4.5
 CYCLING_SPEED_KMH = 14.0
 DRIVING_SPEED_KMH = 25.0
+LAVAL_SLUG = "laval"
+LAVAL_POSTAL_CODE = "53000"
+NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search"
 
 
 @dataclass
@@ -107,6 +110,14 @@ class Listing:
         return format_price(self.price)
 
 
+@dataclass(frozen=True)
+class ReferencePoint:
+    name: str
+    address: str
+    latitude: float
+    longitude: float
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Recupere des offres de logement a Laval et les envoie par email."
@@ -118,6 +129,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--postal-code", default=None)
     parser.add_argument("--max-results", type=int, default=None)
     parser.add_argument("--include-parking", action="store_true")
+    parser.add_argument("--reference-name", default=None)
+    parser.add_argument("--reference-address", default=None)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--json", action="store_true")
     return parser.parse_args()
@@ -238,6 +251,25 @@ def collapse_whitespace(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
+def build_search_label(city_query: str, postal_code: str) -> str:
+    city = collapse_whitespace(city_query).title() or "Ville inconnue"
+    postal = collapse_whitespace(postal_code)
+    return f"{city} ({postal})" if postal else city
+
+
+def is_laval_search(city_query: str, postal_code: str) -> bool:
+    return slugify(city_query) == LAVAL_SLUG and postal_code.strip() == LAVAL_POSTAL_CODE
+
+
+def build_default_reference_point() -> ReferencePoint:
+    return ReferencePoint(
+        name=ESIEA_LAVAL_NAME,
+        address=ESIEA_LAVAL_ADDRESS,
+        latitude=ESIEA_LAVAL_LAT,
+        longitude=ESIEA_LAVAL_LON,
+    )
+
+
 def format_availability_date(value: str | None) -> str:
     if not value:
         return "Non renseignee"
@@ -288,10 +320,11 @@ def build_google_maps_directions_url(
     origin_lat: float | None,
     origin_lon: float | None,
     travelmode: str,
+    reference_point: ReferencePoint,
 ) -> str:
     params = {
         "api": "1",
-        "destination": f"{ESIEA_LAVAL_LAT},{ESIEA_LAVAL_LON}",
+        "destination": f"{reference_point.latitude},{reference_point.longitude}",
         "travelmode": travelmode,
     }
     if origin_lat is not None and origin_lon is not None:
@@ -314,12 +347,13 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 def get_osrm_route_distance_km(
     origin_lat: float | None,
     origin_lon: float | None,
+    reference_point: ReferencePoint,
 ) -> float | None:
     if origin_lat is None or origin_lon is None:
         return None
     url = (
         f"{OSRM_BASE_URL}/driving/"
-        f"{origin_lon},{origin_lat};{ESIEA_LAVAL_LON},{ESIEA_LAVAL_LAT}"
+        f"{origin_lon},{origin_lat};{reference_point.longitude},{reference_point.latitude}"
         "?overview=false"
     )
     try:
@@ -341,7 +375,46 @@ def estimate_duration_minutes(distance_km: float | None, speed_kmh: float) -> in
     return max(1, round((distance_km / speed_kmh) * 60))
 
 
-def resolve_laval_zone_id(city_query: str, postal_code: str) -> str:
+def resolve_reference_point(
+    reference_name: str | None,
+    reference_address: str | None,
+) -> ReferencePoint | None:
+    if not reference_address:
+        return None
+    payload = http_get_json(
+        NOMINATIM_SEARCH_URL,
+        {
+            "q": reference_address,
+            "format": "jsonv2",
+            "limit": 1,
+            "countrycodes": "fr",
+        },
+    )
+    if not payload:
+        raise RuntimeError(f"Impossible de geolocaliser l'adresse de reference: {reference_address}")
+    match = payload[0]
+    return ReferencePoint(
+        name=(reference_name or reference_address).strip(),
+        address=reference_address.strip(),
+        latitude=float(match["lat"]),
+        longitude=float(match["lon"]),
+    )
+
+
+def pick_reference_point(
+    city_query: str,
+    postal_code: str,
+    reference_name: str | None,
+    reference_address: str | None,
+) -> ReferencePoint | None:
+    if reference_address:
+        return resolve_reference_point(reference_name, reference_address)
+    if is_laval_search(city_query, postal_code):
+        return build_default_reference_point()
+    return None
+
+
+def resolve_zone_id(city_query: str, postal_code: str) -> str:
     suggestions = http_get_json(
         SUGGEST_URL,
         {"q": city_query, "type": "city,postalCode,address"},
@@ -350,14 +423,55 @@ def resolve_laval_zone_id(city_query: str, postal_code: str) -> str:
         if item.get("type") != "city":
             continue
         postal_codes = item.get("postalCodes") or []
-        if item.get("name", "").lower() == "laval" and postal_code in postal_codes:
+        if slugify(item.get("name", "")) == slugify(city_query) and postal_code in postal_codes:
             zone_ids = item.get("zoneIds") or []
             if zone_ids:
                 return zone_ids[0]
-    raise RuntimeError("Impossible de trouver la zone Laval (53000) sur Bien'ici.")
+    raise RuntimeError(
+        f"Impossible de trouver la zone {build_search_label(city_query, postal_code)} sur Bien'ici."
+    )
 
 
-def fetch_bienici_listings(zone_id: str, include_parking: bool, max_results: int) -> list[Listing]:
+def suggest_cities(query: str, max_results: int = 8) -> list[dict[str, str]]:
+    text = collapse_whitespace(query)
+    if len(text) < 2:
+        return []
+    payload = http_get_json(
+        SUGGEST_URL,
+        {"q": text, "type": "city,postalCode,address"},
+    )
+    suggestions: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in payload:
+        if item.get("type") != "city":
+            continue
+        city_name = collapse_whitespace(item.get("name", ""))
+        postal_codes = item.get("postalCodes") or []
+        if not city_name or not postal_codes:
+            continue
+        for postal_code in postal_codes:
+            key = (city_name.lower(), postal_code)
+            if key in seen:
+                continue
+            seen.add(key)
+            suggestions.append(
+                {
+                    "city": city_name,
+                    "postal_code": postal_code,
+                    "label": build_search_label(city_name, postal_code),
+                }
+            )
+            if len(suggestions) >= max_results:
+                return suggestions
+    return suggestions
+
+
+def fetch_bienici_listings(
+    zone_id: str,
+    include_parking: bool,
+    max_results: int,
+    enable_commute: bool = True,
+) -> list[Listing]:
     filters = {
         "size": max_results,
         "from": 0,
@@ -422,7 +536,10 @@ def fetch_bienici_listings(zone_id: str, include_parking: bool, max_results: int
             driving_route_url="",
         )
         detailed_listing = enrich_listing_with_detail(listing)
-        listings.append(enrich_listing_with_esiea_commute(detailed_listing))
+        if enable_commute:
+            listings.append(enrich_listing_with_reference_commute(detailed_listing, build_default_reference_point()))
+        else:
+            listings.append(detailed_listing)
 
     listings.sort(key=lambda item: (item.price is None, item.price or float("inf"), item.surface_area or float("inf")))
     return listings
@@ -474,7 +591,10 @@ def enrich_listing_with_detail(listing: Listing) -> Listing:
     )
 
 
-def enrich_listing_with_esiea_commute(listing: Listing) -> Listing:
+def enrich_listing_with_reference_commute(
+    listing: Listing,
+    reference_point: ReferencePoint,
+) -> Listing:
     if (
         listing.distance_to_esiea_km is not None
         and listing.transit_route_url
@@ -489,11 +609,15 @@ def enrich_listing_with_esiea_commute(listing: Listing) -> Listing:
         straight_line_distance_km = haversine_km(
             listing.latitude,
             listing.longitude,
-            ESIEA_LAVAL_LAT,
-            ESIEA_LAVAL_LON,
+            reference_point.latitude,
+            reference_point.longitude,
         )
 
-    route_distance_km = get_osrm_route_distance_km(listing.latitude, listing.longitude)
+    route_distance_km = get_osrm_route_distance_km(
+        listing.latitude,
+        listing.longitude,
+        reference_point,
+    )
     effective_distance_km = route_distance_km or straight_line_distance_km
     walk_time = estimate_duration_minutes(effective_distance_km, WALKING_SPEED_KMH)
     bike_time = estimate_duration_minutes(effective_distance_km, CYCLING_SPEED_KMH)
@@ -533,21 +657,25 @@ def enrich_listing_with_esiea_commute(listing: Listing) -> Listing:
             listing.latitude,
             listing.longitude,
             "transit",
+            reference_point,
         ),
         walking_route_url=build_google_maps_directions_url(
             listing.latitude,
             listing.longitude,
             "walking",
+            reference_point,
         ),
         biking_route_url=build_google_maps_directions_url(
             listing.latitude,
             listing.longitude,
             "bicycling",
+            reference_point,
         ),
         driving_route_url=build_google_maps_directions_url(
             listing.latitude,
             listing.longitude,
             "driving",
+            reference_point,
         ),
     )
 
@@ -660,7 +788,7 @@ def parse_paruvendu_detail_page(detail_url: str) -> Listing | None:
         biking_route_url="",
         driving_route_url="",
     )
-    return enrich_listing_with_esiea_commute(listing)
+    return enrich_listing_with_reference_commute(listing, build_default_reference_point())
 
 
 def fetch_paruvendu_listings(max_results: int) -> list[Listing]:
@@ -1002,19 +1130,35 @@ def dedupe_listings(listings: list[Listing]) -> list[Listing]:
     return deduped
 
 
-def fetch_listings(zone_id: str, include_parking: bool, max_results: int) -> list[Listing]:
+def fetch_listings(
+    zone_id: str,
+    city_query: str,
+    postal_code: str,
+    include_parking: bool,
+    max_results: int,
+    reference_point: ReferencePoint | None = None,
+) -> list[Listing]:
     bienici_limit = min(max_results, 20)
     medium_source_limit = min(max_results, 10)
     small_source_limit = min(max_results, 8)
-    listings = fetch_bienici_listings(zone_id, include_parking=include_parking, max_results=bienici_limit)
-    listings.extend(fetch_paruvendu_listings(max_results=small_source_limit))
-    listings.extend(fetch_fnaim_listings(max_results=medium_source_limit))
-    listings.extend(fetch_entreparticuliers_listings(max_results=medium_source_limit))
-    listings.extend(fetch_square_habitat_listings(max_results=small_source_limit))
+    laval_mode = is_laval_search(city_query, postal_code)
+    listings = fetch_bienici_listings(
+        zone_id,
+        include_parking=include_parking,
+        max_results=bienici_limit,
+        enable_commute=False,
+    )
+    if laval_mode:
+        listings.extend(fetch_paruvendu_listings(max_results=small_source_limit))
+        listings.extend(fetch_fnaim_listings(max_results=medium_source_limit))
+        listings.extend(fetch_entreparticuliers_listings(max_results=medium_source_limit))
+        listings.extend(fetch_square_habitat_listings(max_results=small_source_limit))
     listings = dedupe_listings(listings)
     listings.sort(key=lambda item: (item.price is None, item.price or float("inf"), item.surface_area or float("inf")))
     top_listings = listings[:max_results]
-    return [enrich_listing_with_esiea_commute(item) for item in top_listings]
+    if reference_point is not None:
+        return [enrich_listing_with_reference_commute(item, reference_point) for item in top_listings]
+    return top_listings
 
 
 def to_float(value: Any) -> float | None:
@@ -1041,10 +1185,15 @@ def to_bool(value: Any) -> bool | None:
     return bool(value)
 
 
-def build_text_report(listings: list[Listing], generated_at: datetime) -> str:
+def build_text_report(
+    listings: list[Listing],
+    generated_at: datetime,
+    search_label: str,
+    reference_label: str | None = None,
+) -> str:
     source_summary = build_source_summary(listings)
     lines = [
-        f"Offres de logement a Laval (53000) - {generated_at.strftime('%Y-%m-%d %H:%M')}",
+        f"Offres de logement a {search_label} - {generated_at.strftime('%Y-%m-%d %H:%M')}",
         "",
         f"{len(listings)} offre(s) recuperee(s), triee(s) du moins cher au plus cher.",
         f"Sources: {source_summary or 'Aucune'}",
@@ -1052,7 +1201,7 @@ def build_text_report(listings: list[Listing], generated_at: datetime) -> str:
     ]
 
     for index, listing in enumerate(listings, start=1):
-        lines.extend(format_listing_text(index, listing))
+        lines.extend(format_listing_text(index, listing, reference_label))
         lines.append("")
 
     if not listings:
@@ -1060,7 +1209,7 @@ def build_text_report(listings: list[Listing], generated_at: datetime) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
-def format_listing_text(index: int, listing: Listing) -> list[str]:
+def format_listing_text(index: int, listing: Listing, reference_label: str | None = None) -> list[str]:
     property_label = PROPERTY_TYPE_LABELS.get(listing.property_type, listing.property_type or "Logement")
     parts = [
         f"{index}. {listing.display_title}",
@@ -1077,14 +1226,20 @@ def format_listing_text(index: int, listing: Listing) -> list[str]:
         f"   Agence: {listing.agency_name or 'Non renseignee'}",
         f"   Telephone: {listing.phone or 'Non renseigne'}",
         f"   Disponibilite: {format_availability_date(listing.availability_date)}",
-        f"   Distance jusqu'a {ESIEA_LAVAL_NAME}: {format_distance_km(listing.distance_to_esiea_km)}",
-        f"   Temps estimes vers {ESIEA_LAVAL_NAME}: a pied {format_duration_min(listing.walk_time_to_esiea_min)} | velo {format_duration_min(listing.bike_time_to_esiea_min)} | voiture {format_duration_min(listing.drive_time_to_esiea_min)}",
-        f"   Transport en commun: {listing.transit_route_url}",
-        f"   Itineraire a pied: {listing.walking_route_url}",
         f"   Lien annonce: {listing.detail_page_url}",
         f"   Lien detail API: {listing.detail_api_url}",
         f"   Resume: {truncate(listing.description, 420)}",
     ]
+    if listing.transit_route_url or listing.walking_route_url or listing.distance_to_esiea_km is not None:
+        effective_label = reference_label or ESIEA_LAVAL_NAME
+        parts.extend(
+            [
+                f"   Distance jusqu'a {effective_label}: {format_distance_km(listing.distance_to_esiea_km)}",
+                f"   Temps estimes vers {effective_label}: a pied {format_duration_min(listing.walk_time_to_esiea_min)} | velo {format_duration_min(listing.bike_time_to_esiea_min)} | voiture {format_duration_min(listing.drive_time_to_esiea_min)}",
+                f"   Transport en commun: {listing.transit_route_url or 'Non disponible'}",
+                f"   Itineraire a pied: {listing.walking_route_url or 'Non disponible'}",
+            ]
+        )
     return parts
 
 
@@ -1117,10 +1272,31 @@ def truncate(value: str, max_length: int) -> str:
     return value[: max_length - 3].rstrip() + "..."
 
 
-def build_html_report(listings: list[Listing], generated_at: datetime) -> str:
+def build_html_report(
+    listings: list[Listing],
+    generated_at: datetime,
+    search_label: str,
+    reference_label: str | None = None,
+) -> str:
     source_summary = build_source_summary(listings)
     cards = []
     for index, listing in enumerate(listings, start=1):
+        commute_html = ""
+        if listing.transit_route_url or listing.walking_route_url or listing.distance_to_esiea_km is not None:
+            effective_label = reference_label or ESIEA_LAVAL_NAME
+            commute_html = f"""
+              <p style="margin:4px 0;"><strong>Distance jusqu'a {escape_html(effective_label)}:</strong> {escape_html(format_distance_km(listing.distance_to_esiea_km))}</p>
+              <p style="margin:4px 0;"><strong>Temps estimes:</strong> a pied {escape_html(format_duration_min(listing.walk_time_to_esiea_min))} | velo {escape_html(format_duration_min(listing.bike_time_to_esiea_min))} | voiture {escape_html(format_duration_min(listing.drive_time_to_esiea_min))}</p>
+              <p style="margin:12px 0 0 0;">
+                <a href="{escape_html(listing.transit_route_url)}">Transport en commun vers {escape_html(effective_label)}</a>
+                &nbsp;|&nbsp;
+                <a href="{escape_html(listing.walking_route_url)}">A pied</a>
+                &nbsp;|&nbsp;
+                <a href="{escape_html(listing.biking_route_url)}">Velo</a>
+                &nbsp;|&nbsp;
+                <a href="{escape_html(listing.driving_route_url)}">Voiture</a>
+              </p>
+            """
         cards.append(
             f"""
             <div style="border:1px solid #ddd;border-radius:10px;padding:16px;margin:0 0 16px 0;">
@@ -1138,18 +1314,9 @@ def build_html_report(listings: list[Listing], generated_at: datetime) -> str:
               <p style="margin:4px 0;"><strong>Agence:</strong> {escape_html(listing.agency_name or 'Non renseignee')}</p>
               <p style="margin:4px 0;"><strong>Telephone:</strong> {escape_html(listing.phone or 'Non renseigne')}</p>
               <p style="margin:4px 0;"><strong>Disponibilite:</strong> {escape_html(format_availability_date(listing.availability_date))}</p>
-              <p style="margin:4px 0;"><strong>Distance jusqu'a {escape_html(ESIEA_LAVAL_NAME)}:</strong> {escape_html(format_distance_km(listing.distance_to_esiea_km))}</p>
-              <p style="margin:4px 0;"><strong>Temps estimes:</strong> a pied {escape_html(format_duration_min(listing.walk_time_to_esiea_min))} | velo {escape_html(format_duration_min(listing.bike_time_to_esiea_min))} | voiture {escape_html(format_duration_min(listing.drive_time_to_esiea_min))}</p>
               <p style="margin:8px 0 0 0;"><strong>Resume:</strong> {escape_html(truncate(listing.description, 650))}</p>
+              {commute_html}
               <p style="margin:12px 0 0 0;">
-                <a href="{escape_html(listing.transit_route_url)}">Transport en commun vers ESIEA</a>
-                &nbsp;|&nbsp;
-                <a href="{escape_html(listing.walking_route_url)}">A pied</a>
-                &nbsp;|&nbsp;
-                <a href="{escape_html(listing.biking_route_url)}">Velo</a>
-                &nbsp;|&nbsp;
-                <a href="{escape_html(listing.driving_route_url)}">Voiture</a>
-                &nbsp;|&nbsp;
                 <a href="{escape_html(listing.detail_page_url)}">Voir l'annonce</a>
                 &nbsp;|&nbsp;
                 <a href="{escape_html(listing.detail_api_url)}">Voir la source detail</a>
@@ -1164,7 +1331,7 @@ def build_html_report(listings: list[Listing], generated_at: datetime) -> str:
     return f"""
     <html>
       <body style="font-family:Arial,sans-serif;line-height:1.5;color:#222;">
-        <h2>Offres de logement a Laval (53000)</h2>
+        <h2>Offres de logement a {escape_html(search_label)}</h2>
         <p>Generation: {escape_html(generated_at.strftime('%Y-%m-%d %H:%M'))}</p>
         <p>{len(listings)} offre(s) recuperee(s), triee(s) du moins cher au plus cher.</p>
         <p><strong>Sources:</strong> {escape_html(source_summary or 'Aucune')}</p>
@@ -1213,6 +1380,28 @@ def save_state(path: Path, recipient: str, listings: list[Listing], generated_at
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def search_listings(
+    city_query: str,
+    postal_code: str,
+    include_parking: bool,
+    max_results: int,
+    reference_name: str | None = None,
+    reference_address: str | None = None,
+) -> tuple[str, str, list[Listing], ReferencePoint | None]:
+    search_label = build_search_label(city_query, postal_code)
+    zone_id = resolve_zone_id(city_query, postal_code)
+    reference_point = pick_reference_point(city_query, postal_code, reference_name, reference_address)
+    listings = fetch_listings(
+        zone_id,
+        city_query=city_query,
+        postal_code=postal_code,
+        include_parking=include_parking,
+        max_results=max_results,
+        reference_point=reference_point,
+    )
+    return zone_id, search_label, listings, reference_point
+
+
 def main() -> int:
     args = parse_args()
     env_path = Path(args.env_file)
@@ -1223,6 +1412,8 @@ def main() -> int:
     city_query = get_setting(args.city_query, env_values, "CITY_QUERY", DEFAULT_CITY_QUERY)
     postal_code = get_setting(args.postal_code, env_values, "CITY_POSTAL_CODE", DEFAULT_CITY_POSTAL_CODE)
     max_results = int(get_setting(args.max_results, env_values, "MAX_RESULTS", DEFAULT_MAX_RESULTS))
+    reference_name = get_setting(args.reference_name, env_values, "REFERENCE_NAME", None)
+    reference_address = get_setting(args.reference_address, env_values, "REFERENCE_ADDRESS", None)
     include_parking_value = get_setting(
         "true" if args.include_parking else None,
         env_values,
@@ -1232,15 +1423,22 @@ def main() -> int:
     include_parking = str(include_parking_value).lower() in {"1", "true", "yes", "oui"}
 
     try:
-        zone_id = resolve_laval_zone_id(city_query, postal_code)
-        listings = fetch_listings(zone_id, include_parking=include_parking, max_results=max_results)
+        zone_id, search_label, listings, reference_point = search_listings(
+            city_query=city_query,
+            postal_code=postal_code,
+            include_parking=include_parking,
+            max_results=max_results,
+            reference_name=reference_name,
+            reference_address=reference_address,
+        )
     except Exception as exc:
         print(f"ERREUR collecte: {exc}", file=sys.stderr)
         return 1
 
     generated_at = datetime.now()
-    text_report = build_text_report(listings, generated_at)
-    html_report = build_html_report(listings, generated_at)
+    reference_label = reference_point.name if reference_point is not None else None
+    text_report = build_text_report(listings, generated_at, search_label, reference_label)
+    html_report = build_html_report(listings, generated_at, search_label, reference_label)
 
     if args.json:
         print(
@@ -1274,7 +1472,7 @@ def main() -> int:
         )
         return 2
 
-    subject = f"Logements Laval - {generated_at.strftime('%Y-%m-%d')}"
+    subject = f"Logements {search_label} - {generated_at.strftime('%Y-%m-%d')}"
     try:
         send_email(
             smtp_host=smtp_host,

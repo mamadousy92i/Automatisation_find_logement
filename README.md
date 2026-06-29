@@ -40,6 +40,30 @@ Pour Gmail, il faut utiliser un mot de passe d'application, pas ton mot de passe
 /opt/homebrew/opt/python@3.14/bin/python3.14 logement_bot.py --env-file .env --dry-run
 ```
 
+## Interface web locale
+
+Une interface locale est disponible pour lancer des recherches en changeant la ville et le code postal.
+
+Lancement:
+
+```bash
+python3 web_app.py
+```
+
+Puis ouvrir:
+
+```text
+http://127.0.0.1:8080
+```
+
+Notes:
+
+- pour `Laval (53000)`, l'interface garde les sources supplementaires deja integrees
+- pour les autres villes, la recherche passe d'abord par `Bien'ici`
+- le tri reste du moins cher au plus cher
+- tu peux definir un point de reference libre avec un nom et une adresse
+- si aucun point de reference n'est saisi, `Laval` garde par defaut le repere ESIEA
+
 ## Installation quotidienne sur macOS
 
 ```bash
