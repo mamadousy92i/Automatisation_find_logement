@@ -97,8 +97,8 @@ class SmartRecommendation:
 TRUSTED_ROUTE_PROFILES: dict[str, RouteProfile] = {
     "paris": RouteProfile(
         route_slug="paris",
-        airport_label="Paris CDG / ORY",
-        laval_transfer="Train vers Laval via Paris-Montparnasse, souvent autour de 1h15 a 1h40 apres le transfert aeroport -> gare.",
+        airport_label="Paris-Charles-de-Gaulle ou Paris-Orly",
+        laval_transfer="Apres l'atterrissage, il faut rejoindre Paris-Montparnasse, puis prendre le train vers Laval. Le train Paris-Montparnasse vers Laval prend souvent environ 1h15 a 1h40.",
         practical_note="Souvent le meilleur prix et le plus de choix; il faut juste gerer le transfert dans Paris.",
         reliability_note="Tres bonne option si le prix est nettement moins cher que Nantes/Rennes.",
         carriers=(
@@ -106,35 +106,35 @@ TRUSTED_ROUTE_PROFILES: dict[str, RouteProfile] = {
                 name="Air Senegal",
                 official_url="https://www.flyairsenegal.com/",
                 typical_stops="direct",
-                typical_route="DSS -> CDG",
+                typical_route="Aeroport de Dakar Blaise-Diagne -> Paris-Charles-de-Gaulle",
                 note="Compagnie nationale, route Dakar-Paris a verifier en premier pour un aller simple direct.",
             ),
             TrustedCarrier(
                 name="Air France",
                 official_url="https://wwws.airfrance.sn/",
                 typical_stops="direct",
-                typical_route="DSS -> CDG",
+                typical_route="Aeroport de Dakar Blaise-Diagne -> Paris-Charles-de-Gaulle",
                 note="Compagnie solide pour Paris, souvent plus chere mais directe.",
             ),
             TrustedCarrier(
                 name="Royal Air Maroc",
                 official_url="https://www.royalairmaroc.com/",
                 typical_stops="1 escale",
-                typical_route="DSS -> Casablanca -> Paris",
+                typical_route="Aeroport de Dakar Blaise-Diagne -> Casablanca -> Paris",
                 note="Souvent competitive si l'escale a Casablanca reste raisonnable.",
             ),
             TrustedCarrier(
                 name="TAP Air Portugal",
                 official_url="https://www.flytap.com/",
                 typical_stops="1 escale",
-                typical_route="DSS -> Lisbonne -> Paris",
-                note="Bonne alternative si le prix baisse sur ORY/CDG.",
+                typical_route="Aeroport de Dakar Blaise-Diagne -> Lisbonne -> Paris",
+                note="Bonne alternative si le prix baisse sur Paris-Orly ou Paris-Charles-de-Gaulle.",
             ),
         ),
     ),
     "nantes": RouteProfile(
         route_slug="nantes",
-        airport_label="Nantes Atlantique (NTE)",
+        airport_label="Aeroport Nantes Atlantique",
         laval_transfer="Nantes -> Laval en train ou train + correspondance, souvent autour de 1h30 a 2h30 selon l'horaire.",
         practical_note="Tres interessant pour Laval si le prix reste proche de Paris, car l'arrivee est plus simple.",
         reliability_note="Bon compromis prix/praticite quand il y a une offre correcte.",
@@ -143,28 +143,28 @@ TRUSTED_ROUTE_PROFILES: dict[str, RouteProfile] = {
                 name="Transavia",
                 official_url="https://www.transavia.com/",
                 typical_stops="souvent direct selon saison",
-                typical_route="DSS -> NTE",
+                typical_route="Aeroport de Dakar Blaise-Diagne -> Nantes Atlantique",
                 note="A verifier en priorite pour Nantes quand Google signale un tarif bas.",
             ),
             TrustedCarrier(
                 name="Royal Air Maroc",
                 official_url="https://www.royalairmaroc.com/",
                 typical_stops="1 escale",
-                typical_route="DSS -> Casablanca -> Nantes",
+                typical_route="Aeroport de Dakar Blaise-Diagne -> Casablanca -> Nantes",
                 note="Alternative fiable si le direct n'est pas disponible.",
             ),
             TrustedCarrier(
                 name="Air France",
                 official_url="https://wwws.airfrance.sn/",
                 typical_stops="1 escale",
-                typical_route="DSS -> Paris -> Nantes",
+                typical_route="Aeroport de Dakar Blaise-Diagne -> Paris -> Nantes",
                 note="Fiable, mais a comparer car le trajet peut revenir plus cher.",
             ),
         ),
     ),
     "rennes": RouteProfile(
         route_slug="rennes",
-        airport_label="Rennes Bretagne (RNS)",
+        airport_label="Aeroport Rennes Bretagne",
         laval_transfer="Rennes -> Laval est court en train ou voiture, souvent autour de 1h a 1h30.",
         practical_note="Tres pratique pour Laval, mais les vols Dakar-Rennes sont souvent plus rares et plus chers.",
         reliability_note="A garder comme option confort si l'ecart de prix avec Paris/Nantes est faible.",
@@ -173,14 +173,14 @@ TRUSTED_ROUTE_PROFILES: dict[str, RouteProfile] = {
                 name="Air France",
                 official_url="https://wwws.airfrance.sn/",
                 typical_stops="1 escale",
-                typical_route="DSS -> Paris -> Rennes",
+                typical_route="Aeroport de Dakar Blaise-Diagne -> Paris -> Rennes",
                 note="Option la plus logique si Rennes apparait a un prix acceptable.",
             ),
             TrustedCarrier(
                 name="Royal Air Maroc",
                 official_url="https://www.royalairmaroc.com/",
                 typical_stops="1 a 2 escales",
-                typical_route="DSS -> Casablanca -> France -> Rennes",
+                typical_route="Aeroport de Dakar Blaise-Diagne -> Casablanca -> France -> Rennes",
                 note="A verifier seulement si le prix est vraiment interessant.",
             ),
         ),
@@ -409,6 +409,19 @@ def format_duration(hours: int | None) -> str:
     return f"{hours} h"
 
 
+def format_airport(code: str) -> str:
+    labels = {
+        "DSS": "Aeroport de Dakar Blaise-Diagne",
+        "CDG": "Paris-Charles-de-Gaulle",
+        "ORY": "Paris-Orly",
+        "NTE": "Nantes Atlantique",
+        "RNS": "Rennes Bretagne",
+        "CMN": "Casablanca",
+        "LIS": "Lisbonne",
+    }
+    return labels.get(code, code)
+
+
 def format_month_label(month: int) -> str:
     labels = {
         1: "janvier",
@@ -427,6 +440,15 @@ def format_month_label(month: int) -> str:
     return labels.get(month, str(month))
 
 
+def official_source_names(recommendations: list[SmartRecommendation]) -> list[str]:
+    names: list[str] = []
+    for recommendation in recommendations:
+        for carrier in recommendation.carriers:
+            if carrier.name not in names:
+                names.append(carrier.name)
+    return names
+
+
 def build_text_report(
     offers: list[FlightOffer],
     monthly_signals: list[MonthlyFareSignal],
@@ -435,12 +457,26 @@ def build_text_report(
     start_date: str,
     end_date: str,
 ) -> str:
+    source_names = official_source_names(recommendations)
     lines = [
         "Billets Dakar -> France",
         f"Generation: {generated_at.strftime('%Y-%m-%d %H:%M')}",
         f"Periode cible: {start_date} -> {end_date}",
-        f"Offres retenues: {len(offers)}",
-        f"Reperes mensuels: {len(monthly_signals)}",
+        "",
+        "Ce que le bot a vraiment trouve aujourd'hui:",
+        f"- Prix trouves automatiquement: {len(monthly_signals)} repere(s) venant de Google Flights.",
+        f"- Billets exacts trouves avec heure de depart et d'arrivee: {len(offers)}.",
+        (
+            "- Prix exacts trouves directement sur les sites Air Senegal, Air France, Royal Air Maroc, "
+            "TAP Air Portugal ou Transavia: 0 pour l'instant."
+        ),
+        "",
+        "Important:",
+        (
+            "- Les sites officiels affiches plus bas ne sont pas encore des annonces avec prix exact. "
+            "Ce sont les meilleurs sites a verifier pour acheter le billet."
+        ),
+        "- Le prix repere sert a savoir si une compagnie propose un prix correct ou trop cher.",
         "",
     ]
 
@@ -448,37 +484,39 @@ def build_text_report(
         best = recommendations[0]
         lines.extend(
             [
-                "Conclusion rapide:",
+                "Meilleure piste du jour:",
                 (
-                    f"- Option la plus interessante detectee: {best.destination_label} en "
-                    f"{format_month_label(best.month)} a partir de {format_price(best.low_price)} "
-                    f"(plage haute observee {format_price(best.high_price)})."
+                    f"- Aller vers {best.destination_label} en {format_month_label(best.month)}. "
+                    f"Le prix repere commence autour de {format_price(best.low_price)} "
+                    f"et peut monter vers {format_price(best.high_price)}."
                 ),
-                f"- Arrivee: {best.airport_label}.",
-                f"- Pour Laval: {best.laval_transfer}",
-                f"- A verifier d'abord chez: {', '.join(carrier.name for carrier in best.carriers[:3])}.",
+                f"- Aeroport d'arrivee possible: {best.airport_label}.",
+                f"- Pour aller ensuite a Laval: {best.laval_transfer}",
+                f"- Sites officiels a verifier en premier: {', '.join(carrier.name for carrier in best.carriers[:3])}.",
                 "",
-                "Options fiables a verifier:",
+                "Options classees du moins cher au plus cher:",
             ]
         )
         for index, recommendation in enumerate(recommendations, start=1):
             lines.extend(
                 [
                     (
-                        f"{index}. {recommendation.destination_label} | {format_month_label(recommendation.month)} | "
-                        f"prix repere {format_price(recommendation.low_price)} a {format_price(recommendation.high_price)}"
+                        f"{index}. Destination: {recommendation.destination_label} en {format_month_label(recommendation.month)}"
                     ),
-                    f"   Arrivee: {recommendation.airport_label}",
-                    f"   Pour Laval: {recommendation.laval_transfer}",
-                    f"   Lecture: {recommendation.practical_note}",
-                    f"   Source prix: {recommendation.route_url}",
-                    "   Compagnies fiables:",
+                    f"   Prix repere trouve: entre {format_price(recommendation.low_price)} et {format_price(recommendation.high_price)}",
+                    f"   Aeroport d'arrivee: {recommendation.airport_label}",
+                    f"   Apres l'avion pour rejoindre Laval: {recommendation.laval_transfer}",
+                    f"   Explication simple: {recommendation.practical_note}",
+                    f"   Source du prix repere: Google Flights ({recommendation.route_url})",
+                    "   Sites officiels a verifier maintenant:",
                 ]
             )
             for carrier in recommendation.carriers:
                 lines.extend(
                     [
-                        f"   - {carrier.name}: {carrier.typical_route} | {carrier.typical_stops}",
+                        f"   - {carrier.name}",
+                        f"     Trajet probable: {carrier.typical_route}",
+                        f"     Escales: {carrier.typical_stops}",
                         f"     Site officiel: {carrier.official_url}",
                         f"     Note: {carrier.note}",
                     ]
@@ -486,18 +524,20 @@ def build_text_report(
             lines.append("")
 
     if monthly_signals:
-        lines.append("Reperes mensuels Google Flights sur ta plage:")
+        lines.append("Details des prix reperes trouves par Google Flights:")
         for signal in monthly_signals:
             lines.append(
-                f"- {signal.destination_label} | {format_month_label(signal.month)} | "
-                f"mini repere {format_price(signal.low_price)} | plage haute {format_price(signal.high_price)}"
+                f"- {signal.destination_label} en {format_month_label(signal.month)}: "
+                f"entre {format_price(signal.low_price)} et {format_price(signal.high_price)}"
             )
             lines.append(f"  Lien: {signal.route_url}")
         lines.append("")
 
     if not offers:
-        lines.append("Aucune offre aller simple exacte n'a ete exposee aujourd'hui sur la periode demandee.")
-        lines.append("Source: Google Flights")
+        lines.append("Aucun billet exact avec horaire complet n'a ete trouve automatiquement aujourd'hui.")
+        lines.append("Sources prix exactes actuellement affichees dans ce mail: aucune compagnie officielle.")
+        if source_names:
+            lines.append(f"Sites officiels proposes pour verification: {', '.join(source_names)}.")
         return "\n".join(lines)
 
     for index, offer in enumerate(offers, start=1):
@@ -506,7 +546,7 @@ def build_text_report(
                 f"{index}. {offer.airline_name} | {offer.destination_label} ({offer.destination_airport})",
                 f"   Prix: {format_price(offer.price)}",
                 f"   Depart: {offer.departure_date}",
-                f"   Trajet: {offer.origin_airport} -> {offer.destination_airport}",
+                f"   Trajet: {format_airport(offer.origin_airport)} -> {format_airport(offer.destination_airport)}",
                 f"   Escales: {format_stops(offer.stops)}",
                 f"   Duree estimee: {format_duration(offer.duration_hours)}",
                 f"   Source: {offer.source_name}",
@@ -525,6 +565,7 @@ def build_html_report(
     start_date: str,
     end_date: str,
 ) -> str:
+    source_names = official_source_names(recommendations)
     recommendation_cards: list[str] = []
     for index, recommendation in enumerate(recommendations, start=1):
         carrier_rows = []
@@ -532,21 +573,24 @@ def build_html_report(
             carrier_rows.append(
                 f"""
                 <li style="margin:8px 0;">
-                  <strong>{escape_html(carrier.name)}</strong> - {escape_html(carrier.typical_route)}
-                  <br><span>{escape_html(carrier.typical_stops)} | {escape_html(carrier.note)}</span>
-                  <br><a href="{escape_html(carrier.official_url)}">Site officiel</a>
+                  <strong>{escape_html(carrier.name)}</strong>
+                  <br><span><strong>Trajet probable:</strong> {escape_html(carrier.typical_route)}</span>
+                  <br><span><strong>Escales:</strong> {escape_html(carrier.typical_stops)}</span>
+                  <br><span>{escape_html(carrier.note)}</span>
+                  <br><a href="{escape_html(carrier.official_url)}">Verifier sur le site officiel</a>
                 </li>
                 """.strip()
             )
         recommendation_cards.append(
             f"""
             <div style="border:2px solid #1f6feb;border-radius:12px;padding:16px;margin:0 0 16px 0;background:#f6fbff;">
-              <h3 style="margin:0 0 8px 0;">{index}. {escape_html(recommendation.destination_label)} - {escape_html(format_month_label(recommendation.month))}</h3>
-              <p style="margin:4px 0;"><strong>Prix repere:</strong> {escape_html(format_price(recommendation.low_price))} a {escape_html(format_price(recommendation.high_price))}</p>
-              <p style="margin:4px 0;"><strong>Arrivee:</strong> {escape_html(recommendation.airport_label)}</p>
-              <p style="margin:4px 0;"><strong>Pour Laval:</strong> {escape_html(recommendation.laval_transfer)}</p>
-              <p style="margin:4px 0;"><strong>Lecture:</strong> {escape_html(recommendation.practical_note)}</p>
-              <p style="margin:10px 0;"><a href="{escape_html(recommendation.route_url)}">Comparer sur Google Flights</a></p>
+              <h3 style="margin:0 0 8px 0;">{index}. Destination: {escape_html(recommendation.destination_label)} en {escape_html(format_month_label(recommendation.month))}</h3>
+              <p style="margin:4px 0;"><strong>Prix repere trouve:</strong> entre {escape_html(format_price(recommendation.low_price))} et {escape_html(format_price(recommendation.high_price))}</p>
+              <p style="margin:4px 0;"><strong>Aeroport d'arrivee:</strong> {escape_html(recommendation.airport_label)}</p>
+              <p style="margin:4px 0;"><strong>Apres l'avion pour rejoindre Laval:</strong> {escape_html(recommendation.laval_transfer)}</p>
+              <p style="margin:4px 0;"><strong>Explication simple:</strong> {escape_html(recommendation.practical_note)}</p>
+              <p style="margin:10px 0;"><a href="{escape_html(recommendation.route_url)}">Voir le prix repere sur Google Flights</a></p>
+              <p style="margin:10px 0 4px 0;"><strong>Sites officiels a verifier maintenant:</strong></p>
               <ul style="padding-left:18px;margin:8px 0 0 0;">{''.join(carrier_rows)}</ul>
             </div>
             """.strip()
@@ -557,10 +601,10 @@ def build_html_report(
         signal_cards.append(
             f"""
             <div style="border:1px solid #e6e6e6;border-radius:12px;padding:14px;margin:0 0 12px 0;background:#fafafa;">
-              <h3 style="margin:0 0 8px 0;">{escape_html(signal.destination_label)} | {escape_html(format_month_label(signal.month))}</h3>
-              <p style="margin:4px 0;"><strong>Mini repere:</strong> {escape_html(format_price(signal.low_price))}</p>
-              <p style="margin:4px 0;"><strong>Plage haute:</strong> {escape_html(format_price(signal.high_price))}</p>
-              <p style="margin:10px 0 0 0;"><a href="{escape_html(signal.route_url)}">Voir la route sur Google Flights</a></p>
+              <h3 style="margin:0 0 8px 0;">{escape_html(signal.destination_label)} en {escape_html(format_month_label(signal.month))}</h3>
+              <p style="margin:4px 0;"><strong>Prix repere bas:</strong> {escape_html(format_price(signal.low_price))}</p>
+              <p style="margin:4px 0;"><strong>Prix repere haut:</strong> {escape_html(format_price(signal.high_price))}</p>
+              <p style="margin:10px 0 0 0;"><a href="{escape_html(signal.route_url)}">Voir le repere sur Google Flights</a></p>
             </div>
             """.strip()
         )
@@ -573,7 +617,7 @@ def build_html_report(
               <h3 style="margin:0 0 8px 0;">{escape_html(offer.airline_name)} | {escape_html(offer.destination_label)} ({escape_html(offer.destination_airport)})</h3>
               <p style="margin:4px 0;"><strong>Prix:</strong> {escape_html(format_price(offer.price))}</p>
               <p style="margin:4px 0;"><strong>Depart:</strong> {escape_html(offer.departure_date)}</p>
-              <p style="margin:4px 0;"><strong>Trajet:</strong> {escape_html(offer.origin_airport)} -&gt; {escape_html(offer.destination_airport)}</p>
+              <p style="margin:4px 0;"><strong>Trajet:</strong> {escape_html(format_airport(offer.origin_airport))} -&gt; {escape_html(format_airport(offer.destination_airport))}</p>
               <p style="margin:4px 0;"><strong>Escales:</strong> {escape_html(format_stops(offer.stops))}</p>
               <p style="margin:4px 0;"><strong>Duree estimee:</strong> {escape_html(format_duration(offer.duration_hours))}</p>
               <p style="margin:10px 0 0 0;"><a href="{escape_html(offer.route_url)}">Voir la route sur Google Flights</a></p>
@@ -583,8 +627,12 @@ def build_html_report(
 
     if not cards:
         cards = [
-            "<p>Aucune offre exploitable n'a ete extraite aujourd'hui sur la periode demandee.</p>"
+            "<p>Aucun billet exact avec horaire complet n'a ete trouve automatiquement aujourd'hui.</p>"
         ]
+
+    source_note = ""
+    if source_names:
+        source_note = f"<p><strong>Sites officiels proposes pour verification:</strong> {escape_html(', '.join(source_names))}</p>"
 
     return f"""
     <html>
@@ -592,10 +640,16 @@ def build_html_report(
         <h2>Billets Dakar - France</h2>
         <p><strong>Generation:</strong> {escape_html(generated_at.strftime('%Y-%m-%d %H:%M'))}</p>
         <p><strong>Periode cible:</strong> {escape_html(start_date)} -&gt; {escape_html(end_date)}</p>
-        <p><strong>Source:</strong> Google Flights (web scraping)</p>
-        <p><strong>Offres retenues:</strong> {len(offers)}</p>
-        <p><strong>Reperes mensuels:</strong> {len(monthly_signals)}</p>
+        <div style="border:1px solid #ddd;border-radius:12px;padding:14px;margin:0 0 16px 0;background:#fff8e6;">
+          <h3 style="margin:0 0 8px 0;">Ce que le bot a vraiment trouve aujourd'hui</h3>
+          <p style="margin:4px 0;">Prix trouves automatiquement: <strong>{len(monthly_signals)} repere(s) venant de Google Flights.</strong></p>
+          <p style="margin:4px 0;">Billets exacts avec heure de depart et d'arrivee: <strong>{len(offers)}</strong>.</p>
+          <p style="margin:4px 0;">Prix exacts trouves directement sur les sites Air Senegal, Air France, Royal Air Maroc, TAP Air Portugal ou Transavia: <strong>0 pour l'instant</strong>.</p>
+          <p style="margin:10px 0 0 0;">Les sites officiels affiches plus bas ne sont pas encore des annonces avec prix exact. Ce sont les meilleurs sites a verifier pour acheter le billet.</p>
+        </div>
+        {source_note}
         {''.join(recommendation_cards)}
+        <h3>Details des prix reperes trouves par Google Flights</h3>
         {''.join(signal_cards)}
         {''.join(cards)}
       </body>
